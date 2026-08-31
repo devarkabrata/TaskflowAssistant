@@ -76,11 +76,27 @@ async def _stream_agent_response(
     try:
         agent = await build_agent(taskflow_token=taskflow_token)
 
-        async for stream_mode, chunk in agent.astream(
+        stream = agent.astream(
             {"messages": [{"role": "user", "content": message}]},
             config={"configurable": {"thread_id": thread_id}},
             stream_mode=["messages", "updates"],
-        ):
+        ).__aiter__()
+
+        while True:
+            try:
+                # A multi-step tool-calling turn (e.g. resolving a team, then
+                # a status, then listing tasks) can go quiet for a while
+                # between agent steps. Cloudflare (in front of Render) kills
+                # a connection after ~100s of silence from the origin, so
+                # send a no-op SSE comment line to keep it alive whenever
+                # we're waiting longer than that for the next real event.
+                stream_mode, chunk = await asyncio.wait_for(stream.__anext__(), timeout=15)
+            except asyncio.TimeoutError:
+                yield ": keep-alive\n\n"
+                continue
+            except StopAsyncIteration:
+                break
+
             if stream_mode == "updates":
                 if "model" in chunk:
                     for call in chunk["model"]["messages"][0].tool_calls:
@@ -134,6 +150,13 @@ async def chat(request: ChatRequest, authorization: str = Header(...)):
     return StreamingResponse(
         _stream_agent_response(request.message, request.thread_id, taskflow_token),
         media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            # Tells any nginx-based proxy in the chain not to buffer this
+            # response — otherwise it could hold bytes back until either the
+            # stream ends or its buffer fills, defeating real-time streaming.
+            "X-Accel-Buffering": "no",
+        },
     )
 
 @app.get("/health")
