@@ -1,0 +1,16 @@
+chromadb
+email-validator
+httpx
+langchain
+langchain-chroma
+langchain-classic
+langchain-community
+langchain-google-genai
+langchain-mcp-adapters
+langgraph
+langchain-text-splitters
+langsmith
+mcp
+pydantic
+pypdf
+python-dotenv
