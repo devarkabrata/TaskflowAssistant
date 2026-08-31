@@ -9,4 +9,3 @@ __pycache__
 *.pyc
 .pytest_cache
 .python-version
-README.md
