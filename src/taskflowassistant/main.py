@@ -18,12 +18,24 @@ import sys
 from collections.abc import AsyncIterator
 
 from fastapi import FastAPI, Header, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from taskflowassistant.agent.executor import build_agent
 
 app = FastAPI(title="TaskFlow Agent")
+
+# Permissive for now — this is a test/dev CORS policy so a plain local HTML
+# page (or any frontend) can call this API directly from the browser.
+# Tighten allow_origins to the real frontend's domain before this is used
+# for anything beyond testing.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")
