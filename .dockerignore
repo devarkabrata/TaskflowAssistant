@@ -1,0 +1,12 @@
+# Never bake real secrets into the image — Render sets these as runtime env vars instead.
+.env
+
+.venv
+.git
+.gitignore
+__pycache__
+**/__pycache__
+*.pyc
+.pytest_cache
+.python-version
+README.md

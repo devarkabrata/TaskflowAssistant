@@ -13,6 +13,7 @@ Run with: uv run taskflow-agent
 
 import asyncio
 import json
+import os
 import sys
 from collections.abc import AsyncIterator
 
@@ -23,6 +24,12 @@ from pydantic import BaseModel
 from taskflowassistant.agent.executor import build_agent
 
 app = FastAPI(title="TaskFlow Agent")
+
+
+@app.get("/health")
+async def health() -> dict:
+    """Health check for Render (and anything else pinging the service)."""
+    return {"status": "ok"}
 
 
 class ChatRequest(BaseModel):
@@ -128,7 +135,12 @@ def run() -> None:
         loop = asyncio.SelectorEventLoop
         sys.stdout.reconfigure(encoding="utf-8")
 
-    uvicorn.run(app, host="127.0.0.1", port=8000, loop=loop)
+    # Render (and most PaaS platforms) assign the port dynamically via the
+    # PORT env var and route to 0.0.0.0 — a hardcoded 127.0.0.1:8000 would be
+    # unreachable there. Falls back to 127.0.0.1:8000 for local dev.
+    host = "0.0.0.0" if "PORT" in os.environ else "127.0.0.1"
+    port = int(os.environ.get("PORT", 8000))
+    uvicorn.run(app, host=host, port=port, loop=loop)
 
 
 if __name__ == "__main__":
