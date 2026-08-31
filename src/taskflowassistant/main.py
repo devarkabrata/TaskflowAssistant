@@ -38,13 +38,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-@app.get("/health")
-async def health() -> dict:
-    """Health check for Render (and anything else pinging the service)."""
-    return {"status": "ok"}
-
-
 class ChatRequest(BaseModel):
     message: str
     thread_id: str
@@ -142,6 +135,14 @@ async def chat(request: ChatRequest, authorization: str = Header(...)):
         _stream_agent_response(request.message, request.thread_id, taskflow_token),
         media_type="text/event-stream",
     )
+
+@app.get("/health")
+async def health() -> dict:
+    """Health check for Render (and anything else pinging the service)."""
+    return {
+        "success": True,
+        "message": "Taskflow Agent is UP and RUNNING..."
+    }
 
 
 def run() -> None:
