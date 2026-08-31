@@ -20,6 +20,7 @@ from collections.abc import AsyncIterator
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
+from langchain_core.messages import AIMessageChunk
 from pydantic import BaseModel
 
 from taskflowassistant.agent.executor import build_agent
@@ -106,7 +107,14 @@ async def _stream_agent_response(
                 message_chunk, _metadata = chunk
                 # "messages" mode also carries ToolMessages (already reported
                 # via "tool_result" above) — only stream actual AI text here.
-                text = _extract_text(message_chunk.content) if message_chunk.type == "ai" else ""
+                # Note: AIMessageChunk.type == "AIMessageChunk", NOT "ai"
+                # (that's only true for the full, non-streaming AIMessage) —
+                # isinstance is the correct check here.
+                text = (
+                    _extract_text(message_chunk.content)
+                    if isinstance(message_chunk, AIMessageChunk)
+                    else ""
+                )
                 if text:
                     yield _sse({"type": "token", "content": text})
 
