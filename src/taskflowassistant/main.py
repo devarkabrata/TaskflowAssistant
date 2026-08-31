@@ -93,12 +93,33 @@ async def _stream_agent_response(
         # *cancels* the awaitable it wraps on timeout, which would cancel
         # the agent's in-flight step itself (and silently truncate the
         # response) rather than just "waiting a bit longer".
+        #
+        # Separately: an overall deadline, safely under Cloudflare's hard
+        # 100s limit. If the whole turn is still going past this, something
+        # is genuinely stuck (a hung backend call, a retry storm, etc.), not
+        # just "a bit slow" — cancel it and report a clear error instead of
+        # leaving the client hanging indefinitely.
+        deadline = asyncio.get_event_loop().time() + 80
         pending = None
         while True:
             if pending is None:
                 pending = asyncio.ensure_future(stream.__anext__())
 
-            done, _ = await asyncio.wait({pending}, timeout=15)
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                pending.cancel()
+                yield _sse(
+                    {
+                        "type": "error",
+                        "message": (
+                            "This request took too long and was stopped. Please try again — "
+                            "this can happen if an external call (e.g. the TaskFlow backend) is slow to respond."
+                        ),
+                    }
+                )
+                return
+
+            done, _ = await asyncio.wait({pending}, timeout=min(15, remaining))
             if pending not in done:
                 yield ": keep-alive\n\n"
                 continue
