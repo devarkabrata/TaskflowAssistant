@@ -82,20 +82,33 @@ async def _stream_agent_response(
             stream_mode=["messages", "updates"],
         ).__aiter__()
 
+        # A multi-step tool-calling turn (e.g. resolving a team, then a
+        # status, then listing tasks) can go quiet for a while between agent
+        # steps. Cloudflare (in front of Render) kills a connection after
+        # ~100s of silence from the origin, so we send a no-op SSE comment to
+        # keep it alive during any such gap.
+        #
+        # IMPORTANT: this polls a background task rather than using
+        # asyncio.wait_for(stream.__anext__(), ...) directly — wait_for
+        # *cancels* the awaitable it wraps on timeout, which would cancel
+        # the agent's in-flight step itself (and silently truncate the
+        # response) rather than just "waiting a bit longer".
+        pending = None
         while True:
-            try:
-                # A multi-step tool-calling turn (e.g. resolving a team, then
-                # a status, then listing tasks) can go quiet for a while
-                # between agent steps. Cloudflare (in front of Render) kills
-                # a connection after ~100s of silence from the origin, so
-                # send a no-op SSE comment line to keep it alive whenever
-                # we're waiting longer than that for the next real event.
-                stream_mode, chunk = await asyncio.wait_for(stream.__anext__(), timeout=15)
-            except asyncio.TimeoutError:
+            if pending is None:
+                pending = asyncio.ensure_future(stream.__anext__())
+
+            done, _ = await asyncio.wait({pending}, timeout=15)
+            if pending not in done:
                 yield ": keep-alive\n\n"
                 continue
+
+            try:
+                stream_mode, chunk = pending.result()
             except StopAsyncIteration:
                 break
+            finally:
+                pending = None
 
             if stream_mode == "updates":
                 if "model" in chunk:
