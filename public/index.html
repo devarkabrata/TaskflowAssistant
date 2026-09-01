@@ -215,6 +215,27 @@
     return el;
   }
 
+  const POLL_INTERVAL_MS = 2000;
+
+  function applyEvent(event, bubbleState) {
+    if (event.type === "token") {
+      if (!bubbleState.aiBubble) bubbleState.aiBubble = addMessage("ai", "");
+      bubbleState.aiText += event.content;
+      bubbleState.aiBubble.textContent = bubbleState.aiText;
+      logEl.scrollTop = logEl.scrollHeight;
+    } else if (event.type === "tool_call") {
+      addMessage("tool", "🔧 calling " + event.tool + "(" + JSON.stringify(event.args) + ")");
+    } else if (event.type === "tool_result") {
+      addMessage("tool", "↩ " + event.tool + " -> " + event.output);
+    } else if (event.type === "error") {
+      addMessage("error", event.message);
+    }
+  }
+
+  function sleep(ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+
   form.addEventListener("submit", async (e) => {
     e.preventDefault();
 
@@ -235,15 +256,16 @@
 
     // The final AI answer streams in token by token — accumulate it into
     // one growing bubble instead of creating a new one per token.
-    let aiBubble = null;
-    let aiText = "";
+    const bubbleState = { aiBubble: null, aiText: "" };
 
     try {
-      // Native EventSource can't be used here: it only supports GET with no
-      // custom headers, but this endpoint needs POST + a JSON body + a
-      // custom Authorization header — so we read the SSE stream manually
-      // via fetch() instead.
-      const response = await fetch(apiUrl, {
+      // POST /chat kicks off the agent in the background and returns a
+      // job_id almost instantly — it does NOT hold this connection open for
+      // the whole agent run (a Cloudflare proxy in front of the API kills
+      // any single connection that goes quiet for ~100s, which a slow
+      // multi-tool-call turn can exceed). We poll GET /chat/{job_id} for
+      // progress instead.
+      const startResponse = await fetch(apiUrl, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -252,54 +274,32 @@
         body: JSON.stringify({ message, thread_id: threadId }),
       });
 
-      if (!response.ok) {
-        const body = await response.text();
-        addMessage("error", "HTTP " + response.status + ": " + body);
-        sendBtn.disabled = false;
+      if (!startResponse.ok) {
+        const body = await startResponse.text();
+        addMessage("error", "HTTP " + startResponse.status + ": " + body);
         return;
       }
 
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
+      const { job_id: jobId } = await startResponse.json();
+      const statusUrl = apiUrl.replace(/\/$/, "") + "/" + jobId;
 
+      let renderedCount = 0;
       while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-
-        buffer += decoder.decode(value, { stream: true });
-
-        // SSE events are separated by a blank line ("\n\n").
-        const parts = buffer.split("\n\n");
-        buffer = parts.pop(); // last piece may be incomplete — keep it for next read
-
-        for (const part of parts) {
-          const line = part.trim();
-          if (!line.startsWith("data:")) continue;
-
-          const jsonStr = line.slice(5).trim();
-          let event;
-          try {
-            event = JSON.parse(jsonStr);
-          } catch {
-            continue;
-          }
-
-          if (event.type === "token") {
-            if (!aiBubble) aiBubble = addMessage("ai", "");
-            aiText += event.content;
-            aiBubble.textContent = aiText;
-            logEl.scrollTop = logEl.scrollHeight;
-          } else if (event.type === "tool_call") {
-            addMessage("tool", "🔧 calling " + event.tool + "(" + JSON.stringify(event.args) + ")");
-          } else if (event.type === "tool_result") {
-            addMessage("tool", "↩ " + event.tool + " -> " + event.output);
-          } else if (event.type === "error") {
-            addMessage("error", event.message);
-          } else if (event.type === "done") {
-            // nothing to do — stream finished
-          }
+        const pollResponse = await fetch(statusUrl);
+        if (!pollResponse.ok) {
+          const body = await pollResponse.text();
+          addMessage("error", "HTTP " + pollResponse.status + ": " + body);
+          break;
         }
+
+        const { status, events } = await pollResponse.json();
+
+        for (; renderedCount < events.length; renderedCount++) {
+          applyEvent(events[renderedCount], bubbleState);
+        }
+
+        if (status !== "running") break;
+        await sleep(POLL_INTERVAL_MS);
       }
     } catch (err) {
       addMessage("error", String(err));
