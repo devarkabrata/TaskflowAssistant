@@ -26,6 +26,7 @@ Run with: uv run taskflow-agent
 
 import asyncio
 import os
+import re
 import sys
 import time
 import uuid
@@ -89,6 +90,65 @@ def _extract_text(content) -> str:
     return ""
 
 
+# Headers distinctive enough to a *summarization scaffold* (ours, in
+# agent/middleware_registry.py, or langchain's own built-in default) that
+# seeing one as the very first line of a message is a reliable signal —
+# legitimate answers essentially never open with these exact phrases (unlike
+# "SUMMARY" or "NEXT STEPS" alone, which are too generic/common in real
+# answers to use as the trigger).
+_SCAFFOLD_TRIGGER_HEADERS = frozenset({"session intent", "user goal", "resolved ids", "key facts", "artifacts"})
+
+# Both prompt formats define "NEXT STEPS" as their LAST section — look past
+# its last occurrence (accepting a markdown "##" prefix or a bare line) for
+# where real prose might resume.
+_NEXT_STEPS_RE = re.compile(r"(?:\A|\n)[ \t]*#{0,3}[ \t]*next steps[ \t]*\n", re.IGNORECASE)
+
+# The observed leak pattern doesn't insert a paragraph break before the real
+# reply — the model runs straight from its last scaffold sentence into the
+# real one, so the only seam is a period immediately followed by a
+# capitalized word with NO space (e.g. "...return them.To create a new
+# team..."). Real prose essentially never does this (a period is always
+# followed by a space or newline), which is what makes it a safe signal.
+_GLUED_SENTENCE_RE = re.compile(r"\.(?=[A-Z][a-z])")
+_PARAGRAPH_BREAK_RE = re.compile(r"\n[ \t]*\n")
+
+
+def _first_line(text: str) -> str:
+    return text.lstrip().split("\n", 1)[0].strip().lstrip("#").strip().lower()
+
+
+def _strip_leaked_scaffolding(text: str) -> str:
+    """Strip a leaked internal-planning preamble off the front of model output.
+
+    `SummarizationMiddleware` (see `agent/middleware_registry.py`) re-injects
+    its extracted context as a plain message the model then sees like part of
+    the conversation — a fast/small model can respond by literally
+    continuing/echoing that structure for a step (sometimes running straight
+    into its real answer with no separator at all) instead of treating it as
+    silent background context. That's a real, observed failure mode, not a
+    hypothetical.
+
+    Only triggers when the message's FIRST line is one of a handful of
+    phrases that are distinctive to this scaffold and don't occur in normal
+    answers, to keep the false-positive rate on genuine replies near zero.
+    """
+    if _first_line(text) not in _SCAFFOLD_TRIGGER_HEADERS:
+        return text
+
+    next_steps_matches = list(_NEXT_STEPS_RE.finditer(text))
+    tail = text[next_steps_matches[-1].end() :] if next_steps_matches else text
+
+    glued = _GLUED_SENTENCE_RE.search(tail)
+    if glued:
+        return tail[glued.start() + 1 :].strip()
+
+    para_break = _PARAGRAPH_BREAK_RE.search(tail)
+    if para_break:
+        return tail[para_break.end() :].strip()
+
+    return ""
+
+
 async def _run_agent_job(job_id: str, message: str, thread_id: str, taskflow_token: str) -> None:
     """Run the agent to completion, appending events to the job as they occur.
 
@@ -134,8 +194,16 @@ async def _run_agent_job(job_id: str, message: str, thread_id: str, taskflow_tok
                 if stream_mode == "updates":
                     if "model" in chunk:
                         ai_message = chunk["model"]["messages"][0]
-                        text = "".join(pending_text)
+                        raw_text = "".join(pending_text)
+                        text = _strip_leaked_scaffolding(raw_text)
                         pending_text = []
+                        if not ai_message.tool_calls and raw_text and not text:
+                            # The final step's ENTIRE output was scaffolding
+                            # with nothing real after it — staying silent
+                            # would just look like the request hung.
+                            text = (
+                                "I got sidetracked while working on that — could you ask again?"
+                            )
                         if text:
                             event_type = "reasoning" if ai_message.tool_calls else "token"
                             job["events"].append({"type": event_type, "content": text})
