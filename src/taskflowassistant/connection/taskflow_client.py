@@ -73,6 +73,14 @@ class TaskFlowClient:
             )
         return self._client
 
+    # --- Auth (AuthController, /auth) ---
+
+    async def get_current_user(self) -> Any:
+        """GET /auth/me (AuthController.WhoAmI) — the authenticated caller's own full profile."""
+        client = self._require_client()
+        response = await client.get("/auth/me")
+        return _unwrap(response)
+
     # --- Task CRUD (TaskController, /tasks) ---
 
     async def create_task(self, task: dict[str, Any]) -> Any:

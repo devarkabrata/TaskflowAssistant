@@ -1,9 +1,17 @@
-def _pick(source: dict, *keys: str):
-    """Return the first present value among these key spellings (camelCase or PascalCase)."""
+def pick_first(source: dict, *keys: str):
+    """Return the first present value among these key spellings (camelCase or PascalCase).
+
+    Public (not underscore-prefixed) because `mcp/server.py` also uses this to
+    pull an id out of the raw `/auth/me` payload when resolving "the caller"
+    for self-scoped tools — see `_resolve_user_id`/`_resolve_workspace_id`.
+    """
     for key in keys:
         if key in source and source[key] is not None:
             return source[key]
     return None
+
+
+_pick = pick_first  # noqa: N816 - internal alias so this file's own call sites stay short.
 
 
 def trim_result(result, item_fn):
