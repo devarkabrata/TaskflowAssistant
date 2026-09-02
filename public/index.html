@@ -121,6 +121,15 @@
     background: transparent;
   }
 
+  .msg.reasoning {
+    align-self: flex-start;
+    max-width: 90%;
+    font-size: 12px;
+    font-style: italic;
+    color: var(--muted);
+    background: transparent;
+  }
+
   .msg.error {
     align-self: center;
     max-width: 90%;
@@ -223,6 +232,11 @@
       bubbleState.aiText += event.content;
       bubbleState.aiBubble.textContent = bubbleState.aiText;
       logEl.scrollTop = logEl.scrollHeight;
+    } else if (event.type === "reasoning") {
+      // The model "thinking out loud" on a step that went on to call a
+      // tool — shown separately, muted, so it's never mistaken for the
+      // actual answer (and never merges into the answer bubble above).
+      addMessage("reasoning", "💭 " + event.content);
     } else if (event.type === "tool_call") {
       addMessage("tool", "🔧 calling " + event.tool + "(" + JSON.stringify(event.args) + ")");
     } else if (event.type === "tool_result") {

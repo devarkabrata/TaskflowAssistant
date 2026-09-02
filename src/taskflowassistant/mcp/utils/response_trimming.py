@@ -70,3 +70,40 @@ def trim_person(person: dict) -> dict:
         "email": _pick(person, "email", "Email"),
         "status": _pick(person, "status", "Status"),
     }
+
+
+def trim_user(user: dict) -> dict:
+    """Keep only what's needed to resolve a user's name/email to their id."""
+    return {
+        "id": _pick(user, "id", "Id", "userId", "UserId"),
+        "name": _pick(user, "name", "Name"),
+        "email": _pick(user, "email", "Email"),
+        "title": _pick(user, "title", "Title"),
+    }
+
+
+def trim_board(board) -> object:
+    """Trim a Kanban board response: each status column keeps its tasks, trimmed via `trim_task`.
+
+    Handles both a plain array of columns and a wrapper dict with a
+    list-valued `columns`/`statuses` field.
+    """
+
+    def trim_column(column: dict) -> dict:
+        tasks = _pick(column, "tasks", "Tasks") or []
+        return {
+            "id": _pick(column, "id", "Id"),
+            "name": _pick(column, "name", "Name"),
+            "position": _pick(column, "position", "Position"),
+            "tasks": [trim_task(task) for task in tasks],
+        }
+
+    if isinstance(board, list):
+        return [trim_column(column) for column in board]
+    if isinstance(board, dict):
+        trimmed = dict(board)
+        for key in ("columns", "statuses", "Columns", "Statuses"):
+            if isinstance(board.get(key), list):
+                trimmed[key] = [trim_column(column) for column in board[key]]
+        return trimmed
+    return board

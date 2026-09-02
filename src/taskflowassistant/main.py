@@ -11,10 +11,14 @@ that. Rather than fight that limit at the transport level (heartbeats,
 deadlines — tried, still fragile), no single HTTP request is ever held open
 long enough for it to matter here.
 
-Each job's events list uses the same shapes as before:
+Each job's events list uses the following shapes:
   - {"type": "tool_call",   "tool": ..., "args": ...}   agent decided to call a tool
   - {"type": "tool_result", "tool": ..., "output": ...} that tool's result came back
-  - {"type": "token",       "content": ...}             a piece of the final answer
+  - {"type": "reasoning",   "content": ...}             text from a step that went on to
+                                                          call a tool — the model "thinking
+                                                          out loud", not the answer
+  - {"type": "token",       "content": ...}             text from the final, no-more-tool-
+                                                          calls step — the actual answer
   - {"type": "error",       "message": ...}              something went wrong
 
 Run with: uv run taskflow-agent
@@ -105,6 +109,23 @@ async def _run_agent_job(job_id: str, message: str, thread_id: str, taskflow_tok
         agent = await build_agent(taskflow_token=taskflow_token)
 
         async def consume() -> None:
+            # "messages" mode streams AI text for EVERY model step in a
+            # tool-calling loop, not just the last one — a step that goes on
+            # to call a tool almost always has text alongside its tool_calls
+            # (the model "thinking out loud": restating its plan, summarizing
+            # progress, deciding what to do next). That text is real model
+            # output, not a bug in itself, but it is NOT the answer, so it
+            # must never land in the same "token" event stream the frontend
+            # renders as the assistant's reply.
+            #
+            # We can't know whether a step is "final" until it's done
+            # streaming, so buffer each step's text and only classify it once
+            # the matching "updates" chunk arrives: tool_calls present ->
+            # this was mid-loop reasoning, tag it "reasoning" (frontend shows
+            # it separately, muted); no tool_calls -> this is the actual
+            # final answer, tag it "token".
+            pending_text: list[str] = []
+
             async for stream_mode, chunk in agent.astream(
                 {"messages": [{"role": "user", "content": message}]},
                 config={"configurable": {"thread_id": thread_id}},
@@ -112,7 +133,13 @@ async def _run_agent_job(job_id: str, message: str, thread_id: str, taskflow_tok
             ):
                 if stream_mode == "updates":
                     if "model" in chunk:
-                        for call in chunk["model"]["messages"][0].tool_calls:
+                        ai_message = chunk["model"]["messages"][0]
+                        text = "".join(pending_text)
+                        pending_text = []
+                        if text:
+                            event_type = "reasoning" if ai_message.tool_calls else "token"
+                            job["events"].append({"type": event_type, "content": text})
+                        for call in ai_message.tool_calls:
                             job["events"].append(
                                 {"type": "tool_call", "tool": call["name"], "args": call["args"]}
                             )
@@ -138,7 +165,7 @@ async def _run_agent_job(job_id: str, message: str, thread_id: str, taskflow_tok
                         else ""
                     )
                     if text:
-                        job["events"].append({"type": "token", "content": text})
+                        pending_text.append(text)
 
         await asyncio.wait_for(consume(), timeout=180)
         job["status"] = "done"
