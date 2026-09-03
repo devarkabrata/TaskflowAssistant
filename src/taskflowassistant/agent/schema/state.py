@@ -7,6 +7,13 @@ from typing_extensions import TypedDict
 class TaskFlowState(TypedDict):
     messages: Annotated[list[AnyMessage], add_messages]
     taskflow_token: str | None
+    # The caller's own `/auth/me` profile (id, name, email, workspace, teams),
+    # fetched once by `flow_nodes/hydrate_user.py` and cached here for the
+    # rest of the conversation. Plain field, no reducer/UntrackedValue — it
+    # SHOULD persist across every turn of the whole thread via the
+    # checkpointer (that's the entire point: fetch it once per conversation,
+    # not once per turn), unlike `llm_calls` below.
+    current_user: dict | None
     # `UntrackedValue` is never checkpointed — it resets to unavailable every
     # time this thread's state is reloaded for a new invocation, so this
     # genuinely counts model calls made in the CURRENT run only (as

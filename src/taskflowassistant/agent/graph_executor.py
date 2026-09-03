@@ -1,6 +1,7 @@
 from langgraph.prebuilt import ToolNode
 from langgraph.graph import StateGraph, START, END
 
+from taskflowassistant.agent.flow_nodes.hydrate_user import hydrate_user_node
 from taskflowassistant.agent.flow_nodes.main_agent import make_agent_node
 from taskflowassistant.agent.flow_nodes.model_limit import limit_reached_node, route_after_agent
 from taskflowassistant.agent.flow_nodes.summarizer import maybe_summarize_node
@@ -17,14 +18,19 @@ async def build_graph(taskflow_token: str | None = None):
     graph = StateGraph(TaskFlowState)
 
     # ==== NODES ====
+    graph.add_node("hydrate_user", hydrate_user_node)
     graph.add_node("limit_reached", limit_reached_node)
     graph.add_node("summarize", maybe_summarize_node)
     graph.add_node("agent", agent_node)
     graph.add_node("tools", tool_node)
 
     # ==== EDGES ====
-    graph.add_edge(START, "summarize")
-    graph.add_edge("tools", "summarize")   
+    # hydrate_user runs once per THREAD (a no-op on every turn after the
+    # first — see flow_nodes/hydrate_user.py) so the caller's own profile is
+    # cached before the agent's first real turn.
+    graph.add_edge(START, "hydrate_user")
+    graph.add_edge("hydrate_user", "summarize")
+    graph.add_edge("tools", "summarize")
     graph.add_edge("summarize", "agent")
     graph.add_conditional_edges(
         "agent",

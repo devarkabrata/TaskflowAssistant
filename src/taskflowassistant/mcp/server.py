@@ -26,10 +26,13 @@ A few tools resolve "the caller" (a user or workspace id) rather than
 accepting one as a model-supplied argument — either because the parameter is
 optional and defaults to "me" for convenience (Users domain), or because
 accepting it from the caller would reproduce a real IDOR in the backend
-(`get_my_permissions`). That resolution first tries the bearer token's own
-claims (`connection/jwt_utils.py`, no network call) and, if the token doesn't
-carry them, falls back to a live `get_current_user` call — see
-`_resolve_user_id`/`_resolve_workspace_id`.
+(`get_my_permissions`). That resolution always goes through a live
+`get_current_user` call (GET /auth/me) — see `_resolve_user_id`/
+`_resolve_workspace_id`. This used to try decoding the bearer token's JWT
+claims first to avoid the extra network round trip, but that was dropped:
+in practice, real tokens often don't carry a usable workspace claim at all
+(silent failures for `get_workspace_info`), so `get_current_user` is both
+simpler and the only version that's actually reliable.
 
 Run standalone with the `taskflow-mcp-server` console script, or let the
 agent spawn it automatically over stdio via `mcp/client.py`.
@@ -38,7 +41,6 @@ agent spawn it automatically over stdio via `mcp/client.py`.
 from mcp.server.fastmcp import FastMCP
 
 from taskflowassistant.connection.config import config
-from taskflowassistant.connection.jwt_utils import current_user_id, current_workspace_id
 from taskflowassistant.connection.taskflow_client import TaskFlowClient
 from taskflowassistant.mcp.models import (
     ChangeTaskStatusInput,
@@ -96,39 +98,26 @@ async def _current_user_profile() -> dict:
 
 
 async def _resolve_user_id(explicit: object) -> str:
-    """Return `explicit` if given, else the caller's own user id.
-
-    Tries the bearer token's own claims first (no network call); if the
-    token doesn't carry a usable id, falls back to a live `get_current_user`
-    call.
-    """
+    """Return `explicit` if given, else the caller's own user id via `get_current_user`."""
     if explicit is not None:
         return str(explicit)
-    token_user_id = current_user_id(config["TASKFLOW_API_TOKEN"])
-    if token_user_id:
-        return token_user_id
     profile = await _current_user_profile()
     resolved = pick_first(profile, "id", "Id", "userId", "UserId")
     if not resolved:
         raise ValueError(
-            "No user id was given, and the caller's own id couldn't be read from the "
-            "TaskFlow token or resolved via get_current_user — pass an explicit user id."
+            "No user id was given, and the caller's own id couldn't be resolved via "
+            "get_current_user — pass an explicit user id."
         )
     return str(resolved)
 
 
 async def _resolve_workspace_id(explicit: object) -> str:
-    """Return `explicit` if given, else the caller's own workspace id.
+    """Return `explicit` if given, else the caller's own workspace id via `get_current_user`
 
-    Tries the bearer token's own claims first (no network call); if the
-    token doesn't carry a usable id, falls back to a live `get_current_user`
-    call (checking both a top-level `workspaceId` and a nested `workspace.id`).
+    (checking both a top-level `workspaceId` and a nested `workspace.id`).
     """
     if explicit is not None:
         return str(explicit)
-    token_workspace_id = current_workspace_id(config["TASKFLOW_API_TOKEN"])
-    if token_workspace_id:
-        return token_workspace_id
     profile = await _current_user_profile()
     resolved = pick_first(profile, "workspaceId", "WorkspaceId")
     if not resolved:
@@ -137,9 +126,8 @@ async def _resolve_workspace_id(explicit: object) -> str:
             resolved = pick_first(workspace, "id", "Id")
     if not resolved:
         raise ValueError(
-            "No workspace id was given, and the caller's own workspace id couldn't be read "
-            "from the TaskFlow token or resolved via get_current_user — pass an explicit "
-            "workspace id."
+            "No workspace id was given, and the caller's own workspace id couldn't be "
+            "resolved via get_current_user — pass an explicit workspace id."
         )
     return str(resolved)
 
