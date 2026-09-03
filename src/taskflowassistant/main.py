@@ -23,6 +23,14 @@ Each job's events list uses the following shapes:
   - {"type": "token",       "content": ...}             text from the final, no-more-tool-
                                                           calls step — the actual answer
   - {"type": "error",       "message": ...}              something went wrong
+  - {"type": "stopped",     "message": ...}              POST /chat/{job_id}/stop aborted
+                                                          this turn — a deliberate action,
+                                                          not a failure; render distinctly
+                                                          from "error"
+
+A job's top-level "status" is one of "running", "done", "error", or
+"cancelled" (set via POST /chat/{job_id}/stop) — stop polling once it's
+anything other than "running".
 
 The agent itself is a hand-built LangGraph `StateGraph` (see
 `agent/graph_executor.py`), not LangChain's `create_agent` — this module was
@@ -313,6 +321,16 @@ async def _run_agent_job(job_id: str, message: str, thread_id: str, taskflow_tok
             }
         )
         job["status"] = "error"
+    except asyncio.CancelledError:
+        # POST /chat/{job_id}/stop cancelled our own task. `CancelledError`
+        # deliberately isn't an `Exception` subclass, so it needs its own
+        # branch — the generic handler below never sees it. Record the
+        # terminal state, then re-raise: swallowing a CancelledError instead
+        # of letting it propagate is exactly the mistake asyncio warns about,
+        # since it's how the task actually finishes cancelling.
+        job["status"] = "cancelled"
+        job["events"].append({"type": "stopped", "message": "Stopped by request. You can resume by typing Continue"})
+        raise
     except Exception as exc:
         job["events"].append({"type": "error", "message": str(exc)})
         job["status"] = "error"
@@ -336,8 +354,9 @@ async def chat(request: ChatRequest, authorization: str = Header(...)):
     _prune_old_jobs()
 
     job_id = str(uuid.uuid4())
-    jobs[job_id] = {"status": "running", "events": [], "created_at": time.monotonic()}
-    asyncio.create_task(_run_agent_job(job_id, request.message, request.thread_id, taskflow_token))
+    jobs[job_id] = {"status": "running", "events": [], "created_at": time.monotonic(), "task": None}
+    task = asyncio.create_task(_run_agent_job(job_id, request.message, request.thread_id, taskflow_token))
+    jobs[job_id]["task"] = task
 
     return {"job_id": job_id}
 
@@ -349,6 +368,25 @@ async def chat_status(job_id: str) -> dict:
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id.")
     return {"status": job["status"], "events": job["events"]}
+
+
+@app.post("/chat/{job_id}/stop")
+async def stop_chat(job_id: str) -> dict:
+    """Abort an in-progress chat turn — the "Stop generating" button.
+
+    Best-effort: it prevents any FURTHER model/tool calls, but can't undo a
+    side-effecting tool call (e.g. create_task) the model had already
+    dispatched to the TaskFlow backend the instant before this was called.
+    Everything gathered before the stop stays in the job's events, same as a
+    normal finish. Idempotent — stopping an already-finished job just
+    reports its current status rather than erroring.
+    """
+    job = jobs.get(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="Unknown job_id.")
+    if job["status"] == "running":
+        job["task"].cancel()
+    return {"status": job["status"]}
 
 
 @app.get("/files/{file_id}")

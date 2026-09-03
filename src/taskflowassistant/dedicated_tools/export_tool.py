@@ -36,7 +36,11 @@ class ExportDocumentInput(BaseModel):
     underlying data first with other tools (list_tasks, get_my_tasks,
     get_board, list_teams, etc.), decide what belongs in the document
     yourself (which items, how to group them, what to call out), and only
-    then call this tool with:
+    then call this tool.
+
+    Every call needs BOTH `format` and `title` — those are never optional,
+    no matter which of the two content shapes below you use. Then, in
+    addition to those two, provide exactly one of:
     - `content` — freeform Markdown text you write (headings, bullets, bold)
       for a narrative document, e.g. a meeting agenda or summary; or
     - `columns` + `rows` — a table you decide both the headers and data for.
@@ -84,7 +88,10 @@ def export_document(
     This tool does NOT fetch or decide what goes in the document. Gather the
     underlying data first with other tools (list_tasks, get_my_tasks, get_board,
     list_teams, etc.), decide what belongs in the document yourself (which items,
-    how to group them, what to call out), and only then call this tool with:
+    how to group them, what to call out), and only then call this tool.
+
+    Every call needs BOTH `format` and `title` — those are never optional,
+    no matter which content shape you use. Then, in addition, provide:
     - `content` — freeform Markdown text you write (headings, bullets, bold) for a
       narrative document, e.g. a meeting agenda or summary; or
     - `columns` + `rows` — a table you decide both the headers and data for.
