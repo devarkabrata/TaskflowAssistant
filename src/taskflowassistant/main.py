@@ -21,6 +21,21 @@ Each job's events list uses the following shapes:
                                                           calls step — the actual answer
   - {"type": "error",       "message": ...}              something went wrong
 
+The agent itself is a hand-built LangGraph `StateGraph` (see
+`agent/graph_executor.py`), not LangChain's `create_agent` — this module was
+migrated off `create_agent` and its middleware system. Two consequences that
+shape the streaming code below:
+  - The model-invoking node is named "agent" (not "model", which is what
+    `create_agent`'s own internal graph used to call it).
+  - `create_agent`'s middleware system used to tag its summarizer's own model
+    call as "internal" so it never leaked into the `messages` stream (see
+    `langchain.agents.middleware.internal_call_transformer`). A hand-built
+    graph has no such mechanism, so `agent/flow_nodes/summarizer.py`'s own
+    `summarizer_model.ainvoke(...)` call streams through `stream_mode=
+    "messages"` exactly like the real agent's — the only way to tell them
+    apart is `metadata["langgraph_node"]`, which is why every chunk below is
+    filtered on that before being buffered.
+
 Run with: uv run taskflow-agent
 """
 
@@ -36,7 +51,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from langchain_core.messages import AIMessageChunk
 from pydantic import BaseModel
 
-from taskflowassistant.agent.executor import build_agent
+from taskflowassistant.agent.graph_executor import build_compiled_graph
 
 app = FastAPI(title="TaskFlow Agent")
 
@@ -166,34 +181,39 @@ async def _run_agent_job(job_id: str, message: str, thread_id: str, taskflow_tok
     """
     job = jobs[job_id]
     try:
-        agent = await build_agent(taskflow_token=taskflow_token)
+        agent = await build_compiled_graph(taskflow_token=taskflow_token)
 
         async def consume() -> None:
-            # "messages" mode streams AI text for EVERY model step in a
-            # tool-calling loop, not just the last one — a step that goes on
-            # to call a tool almost always has text alongside its tool_calls
-            # (the model "thinking out loud": restating its plan, summarizing
-            # progress, deciding what to do next). That text is real model
-            # output, not a bug in itself, but it is NOT the answer, so it
-            # must never land in the same "token" event stream the frontend
-            # renders as the assistant's reply.
-            #
-            # We can't know whether a step is "final" until it's done
-            # streaming, so buffer each step's text and only classify it once
-            # the matching "updates" chunk arrives: tool_calls present ->
-            # this was mid-loop reasoning, tag it "reasoning" (frontend shows
-            # it separately, muted); no tool_calls -> this is the actual
-            # final answer, tag it "token".
+            # "messages" mode streams AI text for EVERY model call anywhere in
+            # the graph — not just the "agent" node's, and not just the last
+            # step. Two distinct things must be kept out of the visible
+            # "token" stream:
+            #   1. `agent/flow_nodes/summarizer.py`'s OWN model call (it runs
+            #      in the "summarize" node) — this hand-built graph has none
+            #      of `create_agent`'s internal-call filtering, so without
+            #      this check its raw summary text streams in exactly like a
+            #      real answer. Filtered by `metadata["langgraph_node"]`,
+            #      checked as each chunk arrives — cheapest and most reliable
+            #      place to stop it, since it's dropped before ever reaching
+            #      the buffer.
+            #   2. Real "agent" node text from a step that goes on to call a
+            #      tool (the model "thinking out loud" — restating its plan,
+            #      summarizing progress). Real output, but not the answer.
+            #      Can't classify this until the step finishes, so it's
+            #      buffered and only labeled once the matching "updates"
+            #      chunk arrives: tool_calls present -> "reasoning" (shown
+            #      separately, muted); no tool_calls -> the actual answer,
+            #      "token".
             pending_text: list[str] = []
 
             async for stream_mode, chunk in agent.astream(
-                {"messages": [{"role": "user", "content": message}]},
+                {"messages": [{"role": "user", "content": message}], "taskflow_token": taskflow_token},
                 config={"configurable": {"thread_id": thread_id}},
                 stream_mode=["messages", "updates"],
             ):
                 if stream_mode == "updates":
-                    if "model" in chunk:
-                        ai_message = chunk["model"]["messages"][0]
+                    if "agent" in chunk:
+                        ai_message = chunk["agent"]["messages"][0]
                         raw_text = "".join(pending_text)
                         text = _strip_leaked_scaffolding(raw_text)
                         pending_text = []
@@ -220,8 +240,24 @@ async def _run_agent_job(job_id: str, message: str, thread_id: str, taskflow_tok
                                     "output": _extract_text(tool_message.content),
                                 }
                             )
+                    if "limit_reached" in chunk:
+                        # graph_executor.py's step-limit guard: the agent
+                        # wanted to keep calling tools but hit
+                        # MODEL_CALL_LIMIT_PER_RUN. Its message is a plain,
+                        # fixed notice — always the real (and final) answer
+                        # for this turn.
+                        limit_message = chunk["limit_reached"]["messages"][0]
+                        job["events"].append({"type": "token", "content": _extract_text(limit_message.content)})
+                    # "summarize" node updates (RemoveMessage/HumanMessage
+                    # churn from agent/flow_nodes/summarizer.py) are
+                    # deliberately not handled here — internal bookkeeping
+                    # the user should never see.
                 elif stream_mode == "messages":
-                    message_chunk, _metadata = chunk
+                    message_chunk, metadata = chunk
+                    # Only the real "agent" node's own streamed text counts —
+                    # see the "summarize" node's leak risk explained above.
+                    if metadata.get("langgraph_node") != "agent":
+                        continue
                     # "messages" mode also carries ToolMessages (already
                     # reported via "tool_result" above) — only record actual
                     # AI text here. Note: AIMessageChunk.type ==

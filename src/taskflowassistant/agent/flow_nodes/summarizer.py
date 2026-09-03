@@ -1,28 +1,10 @@
-"""Build the agent's middleware stack.
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain_core.messages.utils import get_buffer_string
+from taskflowassistant.agent.schema.state import TaskFlowState
+from taskflowassistant.agent.models.model_2 import build_summarizer_model
 
-    - SummarizationMiddleware: once the conversation gets long, older
-      messages get replaced with an LLM-generated summary, so the agent
-      doesn't keep re-sending (and re-paying for) the full history forever.
-    - ModelCallLimitMiddleware: hard caps how many times the agent is
-      allowed to call the LLM, so a runaway tool-calling loop can't rack up
-      unbounded API cost. `exit_behavior="end"` means it stops cleanly
-      instead of raising an error once a limit is hit.
-"""
-
-from langchain.agents.middleware import ModelCallLimitMiddleware, SummarizationMiddleware
-from langchain.chat_models import init_chat_model
-
-from taskflowassistant.connection.config import config
-
-# Built explicitly (model_provider="google_genai") rather than passing a bare
-# model-name string to SummarizationMiddleware — otherwise init_chat_model's
-# provider auto-detection picks Vertex AI for "gemini-*" names, not the
-# Gemini Developer API this project actually uses.
-summarizer_model = init_chat_model(
-    model=config["GEMINI_SUMMARIZER_MODEL"],
-    model_provider="google_genai",
-    api_key=config["GEMINI_API_KEY"],
-)
+KEEP_LAST = 12
+TOKEN_TRIGGER = 8000
 
 # SummarizationMiddleware's own summary-generation call is already kept out of
 # the user-visible token stream (it tags that call and `InternalCallTransformer`
@@ -88,21 +70,66 @@ Messages to summarize:
 {messages}
 </messages>"""
 
-middlewares: list = [
-    SummarizationMiddleware(
-        model=summarizer_model,
-        # Tool-heavy turns here return sizeable JSON (a full Kanban board,
-        # member lists, etc.), so 5000 tokens triggered summarization on
-        # almost every multi-tool-call turn — raised to 8000/keep more
-        # messages so it only kicks in for conversations that actually run
-        # long, not routine 2-3-tool-call turns.
-        trigger=("tokens", 8000),
-        keep=("messages", 12),
-        summary_prompt=_TASKFLOW_SUMMARY_PROMPT,
-    ),
-    ModelCallLimitMiddleware(
-        thread_limit=config["MODEL_CALL_LIMIT_PER_THREAD"],
-        run_limit=config["MODEL_CALL_LIMIT_PER_RUN"],
-        exit_behavior="end",
-    ),
-]
+
+def _safe_cutoff_index(messages: list[AnyMessage], cutoff_index: int) -> int:
+    """Nudge a cutoff index so it never separates an AIMessage's tool_calls from
+    the ToolMessages answering them.
+
+    Slicing `messages` by raw position can land the cutoff in the middle of a
+    tool-call/tool-response sequence — e.g. the AIMessage that requested a
+    tool call gets summarized away while the ToolMessage answering it is kept.
+    Most providers reject that as an invalid message sequence (a tool
+    response with no matching call) on the next real model call. If the
+    message right at the cutoff is a ToolMessage, walk backward to find the
+    AIMessage that produced it and move the cutoff there instead (summarizing
+    a little less); if no matching AIMessage is found, walk forward past the
+    ToolMessages instead (summarizing a little more).
+    """
+    if cutoff_index >= len(messages) or not isinstance(messages[cutoff_index], ToolMessage):
+        return cutoff_index
+
+    tool_call_ids: set[str] = set()
+    idx = cutoff_index
+    while idx < len(messages) and isinstance(messages[idx], ToolMessage):
+        if messages[idx].tool_call_id:
+            tool_call_ids.add(messages[idx].tool_call_id)
+        idx += 1
+
+    for i in range(cutoff_index - 1, -1, -1):
+        msg = messages[i]
+        if isinstance(msg, AIMessage) and msg.tool_calls:
+            ai_tool_call_ids = {tc.get("id") for tc in msg.tool_calls if tc.get("id")}
+            if tool_call_ids & ai_tool_call_ids:
+                return i
+
+    return idx
+
+
+# Create a summarizer
+summarizer_model = build_summarizer_model()
+
+async def maybe_summarize_node(state: TaskFlowState) -> dict:
+    messages = state["messages"]
+
+    if summarizer_model.get_num_tokens_from_messages(messages) <= TOKEN_TRIGGER:
+        return {}
+
+    cutoff_index = _safe_cutoff_index(messages, max(0, len(messages) - KEEP_LAST))
+    to_summarize = messages[:cutoff_index]
+    if not to_summarize:
+        return {}
+
+    # `get_buffer_string` renders each message as readable
+    # "<Role>: <content>" text — `.format(messages=to_summarize)` alone would
+    # instead interpolate Python's raw repr of the message objects
+    # (`[HumanMessage(content='...', id='...'), ...]`), which is noisy and
+    # wastes tokens for no benefit to the summarizer.
+    formatted = _TASKFLOW_SUMMARY_PROMPT.format(
+        messages=get_buffer_string(to_summarize, format="xml")
+    )
+    summary = await summarizer_model.ainvoke(formatted)
+
+    return {
+        "messages": [RemoveMessage(id=m.id) for m in to_summarize if m.id]
+        + [HumanMessage(content=summary.content, additional_kwargs={"lc_source": "summarization"})]
+    }
