@@ -7,12 +7,18 @@ see `mcp/models.py`'s `ExportDocumentInput` — it just lays out whichever of
 
 from pathlib import Path
 
+from taskflowassistant.dedicated_tools.table_utils import row_value
+
 
 def _render_table(columns: list[str], rows: list[dict]) -> str:
     header = "| " + " | ".join(columns) + " |"
     separator = "| " + " | ".join("---" for _ in columns) + " |"
     body_lines = [
-        "| " + " | ".join("" if row.get(col) is None else str(row.get(col)) for col in columns) + " |"
+        "| "
+        + " | ".join(
+            "" if row_value(row, col) is None else str(row_value(row, col)) for col in columns
+        )
+        + " |"
         for row in rows
     ]
     return "\n".join([header, separator, *body_lines])

@@ -11,6 +11,8 @@ from openpyxl import Workbook
 from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
+from taskflowassistant.dedicated_tools.table_utils import row_value
+
 _MAX_SHEET_TITLE_LENGTH = 31  # Excel's own hard limit on sheet names.
 
 
@@ -24,7 +26,7 @@ def write_excel_file(title: str, columns: list[str], rows: list[dict], path: Pat
         cell.font = Font(bold=True)
 
     for row in rows:
-        sheet.append([row.get(column) for column in columns])
+        sheet.append([row_value(row, column) for column in columns])
 
     for idx in range(1, len(columns) + 1):
         sheet.column_dimensions[get_column_letter(idx)].width = 24

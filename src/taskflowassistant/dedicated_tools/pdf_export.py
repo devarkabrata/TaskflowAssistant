@@ -23,6 +23,8 @@ is the actual point.
 import re
 from pathlib import Path
 
+from taskflowassistant.dedicated_tools.table_utils import row_value
+
 from reportlab.lib.pagesizes import LETTER
 from reportlab.lib.styles import getSampleStyleSheet
 from reportlab.platypus import ListFlowable, ListItem, Paragraph, SimpleDocTemplate, Spacer
@@ -87,10 +89,10 @@ def _rows_to_document_markdown(columns: list[str], rows: list[dict]) -> str:
     lines: list[str] = []
 
     for row in rows:
-        heading_value = row.get(heading_column)
+        heading_value = row_value(row, heading_column)
         lines.append(f"## {heading_value if heading_value not in (None, '') else 'Untitled'}")
         for column in detail_columns:
-            value = row.get(column)
+            value = row_value(row, column)
             if value in (None, ""):
                 continue
             lines.append(f"- **{column}:** {value}")
