@@ -11,3 +11,7 @@ wheels/
 
 # Secrets
 .env
+
+# Generated document exports (ephemeral — download-then-delete, see
+# dedicated_tools/store.py)
+data/exports/

@@ -130,6 +130,21 @@
     background: transparent;
   }
 
+  .msg.thinking {
+    align-self: flex-start;
+    max-width: 90%;
+    font-size: 12px;
+    font-style: italic;
+    color: var(--muted);
+    background: transparent;
+    animation: thinking-pulse 1.4s ease-in-out infinite;
+  }
+
+  @keyframes thinking-pulse {
+    0%, 100% { opacity: 0.45; }
+    50% { opacity: 1; }
+  }
+
   .msg.error {
     align-self: center;
     max-width: 90%;
@@ -226,8 +241,38 @@
 
   const POLL_INTERVAL_MS = 2000;
 
+  // Every step of a multi-tool-call turn requires a fresh round trip (a
+  // model call, or a call out to the TaskFlow backend) that produces no
+  // visible event until it finishes — without something here, those gaps
+  // just look like the request hung. This single indicator element is kept
+  // pinned to the bottom of the log (re-appending an element already in the
+  // DOM moves it) and its text kept up to date with whatever's currently
+  // in flight, so there's always a "we're still working on it" cue between
+  // one tool result and whatever comes next — another tool call, or the
+  // final answer.
+  let thinkingEl = null;
+
+  function showThinking(text) {
+    if (!thinkingEl) {
+      thinkingEl = document.createElement("div");
+      thinkingEl.className = "msg thinking";
+    }
+    thinkingEl.textContent = text;
+    logEl.appendChild(thinkingEl);
+    logEl.scrollTop = logEl.scrollHeight;
+  }
+
+  function hideThinking() {
+    if (thinkingEl) {
+      thinkingEl.remove();
+      thinkingEl = null;
+    }
+  }
+
   function applyEvent(event, bubbleState) {
     if (event.type === "token") {
+      // The real answer has started arriving — the placeholder's job is done.
+      hideThinking();
       if (!bubbleState.aiBubble) bubbleState.aiBubble = addMessage("ai", "");
       bubbleState.aiText += event.content;
       bubbleState.aiBubble.textContent = bubbleState.aiText;
@@ -237,11 +282,15 @@
       // tool — shown separately, muted, so it's never mistaken for the
       // actual answer (and never merges into the answer bubble above).
       addMessage("reasoning", "💭 " + event.content);
+      showThinking("⏳ Deciding what to do next…");
     } else if (event.type === "tool_call") {
       addMessage("tool", "🔧 calling " + event.tool + "(" + JSON.stringify(event.args) + ")");
+      showThinking("⏳ Calling " + event.tool + "…");
     } else if (event.type === "tool_result") {
       addMessage("tool", "↩ " + event.tool + " -> " + event.output);
+      showThinking("🧠 Reviewing what " + event.tool + " returned…");
     } else if (event.type === "error") {
+      hideThinking();
       addMessage("error", event.message);
     }
   }
@@ -267,6 +316,7 @@
     addMessage("user", message);
     messageInput.value = "";
     sendBtn.disabled = true;
+    showThinking("🤔 Thinking…");
 
     // The final AI answer streams in token by token — accumulate it into
     // one growing bubble instead of creating a new one per token.
@@ -289,6 +339,7 @@
       });
 
       if (!startResponse.ok) {
+        hideThinking();
         const body = await startResponse.text();
         addMessage("error", "HTTP " + startResponse.status + ": " + body);
         return;
@@ -301,6 +352,7 @@
       while (true) {
         const pollResponse = await fetch(statusUrl);
         if (!pollResponse.ok) {
+          hideThinking();
           const body = await pollResponse.text();
           addMessage("error", "HTTP " + pollResponse.status + ": " + body);
           break;
@@ -316,8 +368,13 @@
         await sleep(POLL_INTERVAL_MS);
       }
     } catch (err) {
+      hideThinking();
       addMessage("error", String(err));
     } finally {
+      // Safety net: if the job finished without ever emitting a "token"
+      // (the normal way the indicator gets cleared), don't leave it
+      // spinning forever.
+      hideThinking();
       sendBtn.disabled = false;
     }
   });

@@ -11,7 +11,9 @@ langchain-text-splitters
 langgraph
 langsmith
 mcp
+openpyxl
 pydantic
 pypdf
 python-dotenv
+reportlab
 uvicorn[standard]

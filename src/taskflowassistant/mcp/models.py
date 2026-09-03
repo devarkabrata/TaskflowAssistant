@@ -401,3 +401,10 @@ class UpdateUserPasswordInput(CamelModel):
 
     def to_body_dict(self) -> dict:
         return self.model_dump(by_alias=True, exclude={"user_id"}, mode="json")
+
+
+# Document export (`ExportDocumentInput`/`export_document`) deliberately does
+# NOT live in this file — see `dedicated_tools/export_tool.py`'s module
+# docstring. It's not a TaskFlow backend endpoint at all (no camelCase wire
+# format needed), and it's registered as a plain LangChain tool directly in
+# `agent/tools_registry.py` rather than through this MCP server.

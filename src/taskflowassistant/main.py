@@ -14,6 +14,9 @@ long enough for it to matter here.
 Each job's events list uses the following shapes:
   - {"type": "tool_call",   "tool": ..., "args": ...}   agent decided to call a tool
   - {"type": "tool_result", "tool": ..., "output": ...} that tool's result came back
+  - {"type": "file",        "filename": ..., "url": ...} export_document produced a
+                                                          document — render as a download
+                                                          link/button, GET {url} to fetch it
   - {"type": "reasoning",   "content": ...}             text from a step that went on to
                                                           call a tool — the model "thinking
                                                           out loud", not the answer
@@ -40,6 +43,7 @@ Run with: uv run taskflow-agent
 """
 
 import asyncio
+import json
 import os
 import re
 import sys
@@ -48,10 +52,13 @@ import uuid
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from langchain_core.messages import AIMessageChunk
 from pydantic import BaseModel
+from starlette.background import BackgroundTask
 
 from taskflowassistant.agent.graph_executor import build_compiled_graph
+from taskflowassistant.dedicated_tools.store import get_file, release_file
 
 app = FastAPI(title="TaskFlow Agent")
 
@@ -103,6 +110,21 @@ def _extract_text(content) -> str:
             if isinstance(block, dict) and block.get("type") == "text"
         )
     return ""
+
+
+def _file_event_from_tool_output(output_text: str) -> dict | None:
+    """Parse `export_document`'s JSON result into a "file" event, if well-formed.
+
+    Returns None (falling back to a normal "tool_result" event) if the tool
+    actually errored — its output won't be the expected shape in that case.
+    """
+    try:
+        data = json.loads(output_text)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(data, dict) or "downloadUrl" not in data or "filename" not in data:
+        return None
+    return {"type": "file", "filename": data["filename"], "url": data["downloadUrl"]}
 
 
 # Headers distinctive enough to a *summarization scaffold* (ours, in
@@ -233,11 +255,18 @@ async def _run_agent_job(job_id: str, message: str, thread_id: str, taskflow_tok
                             )
                     if "tools" in chunk:
                         for tool_message in chunk["tools"]["messages"]:
+                            output_text = _extract_text(tool_message.content)
+                            file_event = (
+                                _file_event_from_tool_output(output_text)
+                                if tool_message.name == "export_document"
+                                else None
+                            )
                             job["events"].append(
-                                {
+                                file_event
+                                or {
                                     "type": "tool_result",
                                     "tool": tool_message.name,
-                                    "output": _extract_text(tool_message.content),
+                                    "output": output_text,
                                 }
                             )
                     if "limit_reached" in chunk:
@@ -320,6 +349,24 @@ async def chat_status(job_id: str) -> dict:
     if job is None:
         raise HTTPException(status_code=404, detail="Unknown job_id.")
     return {"status": job["status"], "events": job["events"]}
+
+
+@app.get("/files/{file_id}")
+async def download_file(file_id: str):
+    """Serve a document `export_document` generated (see dedicated_tools/).
+
+    One-shot by design: the file is deleted from disk right after this
+    response finishes sending (dedicated_tools/store.py's `release_file`, run
+    as a background task) — the same `file_id` won't work a second time.
+    """
+    entry = get_file(file_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Unknown or already-downloaded file_id.")
+    return FileResponse(
+        path=entry["path"],
+        filename=entry["filename"],
+        background=BackgroundTask(release_file, file_id),
+    )
 
 
 @app.get("/health")

@@ -661,6 +661,13 @@ async def update_user_password(payload: UpdateUserPasswordInput) -> object:
         return await client.update_user_password(user_id, payload.to_body_dict())
 
 
+# Document export (`export_document`) deliberately does NOT live here — see
+# `dedicated_tools/export_tool.py`'s module docstring for why: this server
+# runs as its own spawned subprocess, and that tool needs to share in-process
+# state (the generated-file registry) with `main.py`. It's registered
+# directly in `agent/tools_registry.py` instead.
+
+
 def main() -> None:
     """Entry point for the `taskflow-mcp-server` console script.
 
