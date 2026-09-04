@@ -29,6 +29,14 @@ def get_config() -> dict:
         ),
         "LLM_TEMPERATURE": float(os.environ.get("LLM_TEMPERATURE", "0.2")),
         "LLM_MAX_TOKENS": int(os.environ.get("LLM_MAX_TOKENS", "1024")),
+        # The google-genai SDK passes `timeout=None` straight through to its
+        # httpx client when unset, meaning NO client-side timeout at all — a
+        # slow/stuck Gemini call can then hang for as long as
+        # main.py's own 180s asyncio.wait_for allows, silently eating the
+        # whole budget instead of failing fast. Bounding it here well below
+        # that 180s lets a stuck call retry and still finish inside the job.
+        "LLM_TIMEOUT_SECONDS": int(os.environ.get("LLM_TIMEOUT_SECONDS", "45")),
+        "LLM_MAX_RETRIES": int(os.environ.get("LLM_MAX_RETRIES", "2")),
         "MODEL_CALL_LIMIT_PER_THREAD": int(
             os.environ.get("MODEL_CALL_LIMIT_PER_THREAD", "20")
         ),

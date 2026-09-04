@@ -13,5 +13,7 @@ def build_summarizer_model():
         model_provider="google_genai",
         api_key=config["GEMINI_API_KEY"],
         thinking_config={"thinking_level": "MEDIUM"},
+        timeout=config["LLM_TIMEOUT_SECONDS"],
+        max_retries=config["LLM_MAX_RETRIES"],
     )
     return summarizer_model

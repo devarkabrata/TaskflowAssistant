@@ -23,8 +23,19 @@ class TaskFlowState(TypedDict):
     # (the same way `messages` does, via the checkpointer) — after enough
     # total turns it would permanently exceed the run limit and every future
     # message would immediately dead-end at `limit_reached` having done no
-    # work. `flow_nodes/main_agent.py` increments this itself
+    # work. `flow_nodes/specialist_agent.py` increments this itself
     # (`state.get("llm_calls", 0) + 1`); there's no reducer here for the same
     # reason the upstream `ModelCallLimitMiddleware` doesn't use one either —
     # `UntrackedValue.update()` is last-value-wins, not summing.
     llm_calls: Annotated[int, UntrackedValue]
+    # Set once per run by flow_nodes/supervisor.py (which itself only ever
+    # runs once per run — see its docstring) and read exactly once, by
+    # graph_executor.py's supervisor->specialist edge, to send control to
+    # whichever domain it picked. Any LATER routing between specialists
+    # within the same run (a specialist's own tool loop, or an explicit
+    # handoff to a different domain) is read directly off `messages`
+    # instead (see graph_executor.py's `_route_after_tools`/
+    # `_route_after_summarize`), not off this field. `UntrackedValue`
+    # because a new run always asks the supervisor again — a leftover value
+    # from a previous run/thread reload is never meaningful.
+    active_specialist: Annotated[str, UntrackedValue]

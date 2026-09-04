@@ -57,7 +57,8 @@
     margin-bottom: 3px;
   }
 
-  .config input {
+  .config input,
+  .config select {
     width: 100%;
     padding: 7px 9px;
     background: var(--bg);
@@ -153,6 +154,33 @@
     font-size: 13px;
   }
 
+  .msg.stopped {
+    align-self: center;
+    max-width: 90%;
+    color: var(--muted);
+    border: 1px dashed var(--muted);
+    font-size: 13px;
+    font-family: ui-monospace, monospace;
+  }
+
+  .msg.file {
+    align-self: flex-start;
+    max-width: 90%;
+    font-size: 13px;
+    border: 1px solid var(--accent);
+    background: transparent;
+  }
+
+  .msg.file a {
+    color: var(--accent);
+    font-weight: 600;
+    text-decoration: none;
+  }
+
+  .msg.file a:hover {
+    text-decoration: underline;
+  }
+
   form {
     display: flex;
     gap: 8px;
@@ -185,6 +213,12 @@
     opacity: 0.5;
     cursor: default;
   }
+
+  #stopBtn {
+    background: transparent;
+    border: 1px solid var(--error);
+    color: var(--error);
+  }
 </style>
 </head>
 <body>
@@ -207,6 +241,16 @@
       <label for="threadIdInput">thread_id</label>
       <input id="threadIdInput" />
     </div>
+    <div>
+      <label for="thinkingLevelInput">thinking_level (whichever specialist handles this turn — not the supervisor or summarizer; leave blank for Gemini's default)</label>
+      <select id="thinkingLevelInput">
+        <option value="">(default)</option>
+        <option value="minimal">minimal</option>
+        <option value="low">low</option>
+        <option value="medium">medium</option>
+        <option value="high">high</option>
+      </select>
+    </div>
   </div>
 </div>
 
@@ -215,6 +259,7 @@
 <form id="chatForm">
   <input id="messageInput" placeholder="Type a message..." autocomplete="off" />
   <button id="sendBtn" type="submit">Send</button>
+  <button id="stopBtn" type="button" disabled>Stop</button>
 </form>
 
 <script>
@@ -224,7 +269,13 @@
   const apiUrlInput = document.getElementById("apiUrl");
   const tokenInput = document.getElementById("tokenInput");
   const threadIdInput = document.getElementById("threadIdInput");
+  const thinkingLevelInput = document.getElementById("thinkingLevelInput");
   const sendBtn = document.getElementById("sendBtn");
+  const stopBtn = document.getElementById("stopBtn");
+
+  // Set once a job starts, cleared once it settles — lets the Stop button
+  // (POST /chat/{job_id}/stop) target whichever job is currently running.
+  let currentJobId = null;
 
   // Give every page load a fresh default thread_id, editable if you want to
   // resume/continue a specific earlier conversation.
@@ -269,7 +320,7 @@
     }
   }
 
-  function applyEvent(event, bubbleState) {
+  function applyEvent(event, bubbleState, apiUrl) {
     if (event.type === "token") {
       // The real answer has started arriving — the placeholder's job is done.
       hideThinking();
@@ -278,17 +329,48 @@
       bubbleState.aiBubble.textContent = bubbleState.aiText;
       logEl.scrollTop = logEl.scrollHeight;
     } else if (event.type === "reasoning") {
-      // The model "thinking out loud" on a step that went on to call a
-      // tool — shown separately, muted, so it's never mistaken for the
-      // actual answer (and never merges into the answer bubble above).
+      // Muted, never mistaken for the actual answer (and never merges into
+      // the answer bubble above). The agent is a supervisor + domain
+      // specialists (agent/flow_nodes/supervisor.py) — this is a
+      // specialist "thinking out loud" on a step that goes on to call a
+      // tool (including an explicit handoff to another domain, see
+      // agent/handoff_tools.py — a specialist that calls NO tool at all is
+      // always the turn's final answer, so it's never classified as
+      // "reasoning").
       addMessage("reasoning", "💭 " + event.content);
-      showThinking("⏳ Deciding what to do next…");
+      showThinking("⏳ Continuing…");
+    } else if (event.type === "tool_call" && event.tool.startsWith("handoff_to_")) {
+      // agent/handoff_tools.py — a specialist explicitly passing the rest
+      // of the request to a different domain, not a real backend action.
+      const targetDomain = event.tool.slice("handoff_to_".length);
+      addMessage("tool", "🔀 Handing off to " + targetDomain + ": " + (event.args.reason || ""));
+      showThinking("⏳ Handing off to " + targetDomain + "…");
+    } else if (event.type === "tool_result" && event.tool.startsWith("handoff_to_")) {
+      // The matching tool_result is just an echo of the reason above (see
+      // handoff_to_X's own implementation) — nothing new to show.
     } else if (event.type === "tool_call") {
       addMessage("tool", "🔧 calling " + event.tool + "(" + JSON.stringify(event.args) + ")");
       showThinking("⏳ Calling " + event.tool + "…");
     } else if (event.type === "tool_result") {
       addMessage("tool", "↩ " + event.tool + " -> " + event.output);
       showThinking("🧠 Reviewing what " + event.tool + " returned…");
+    } else if (event.type === "file") {
+      // export_document produced a downloadable file — GET {url} serves it
+      // and deletes it from disk afterward (see dedicated_tools/store.py),
+      // so this link is one-time use; a plain <a> triggers a real
+      // navigation/download, which is what actually fires that delete.
+      hideThinking();
+      const fileEl = addMessage("file", "");
+      const origin = new URL(apiUrl, window.location.href).origin;
+      const link = document.createElement("a");
+      link.href = origin + event.url;
+      link.textContent = "⬇ Download " + event.filename;
+      link.target = "_blank";
+      link.rel = "noopener";
+      fileEl.appendChild(link);
+    } else if (event.type === "stopped") {
+      hideThinking();
+      addMessage("stopped", "⏹ " + event.message);
     } else if (event.type === "error") {
       hideThinking();
       addMessage("error", event.message);
@@ -306,6 +388,7 @@
     const token = tokenInput.value.trim();
     const threadId = threadIdInput.value.trim();
     const apiUrl = apiUrlInput.value.trim();
+    const thinkingLevel = thinkingLevelInput.value;
 
     if (!message) return;
     if (!token) {
@@ -335,7 +418,14 @@
           "Content-Type": "application/json",
           "Authorization": "Bearer " + token,
         },
-        body: JSON.stringify({ message, thread_id: threadId }),
+        body: JSON.stringify({
+          message,
+          thread_id: threadId,
+          // Only sent when the dropdown isn't left on "(default)" — omitting
+          // it lets Gemini's own default thinking behavior apply, matching
+          // ChatRequest.thinking_level being optional (main.py).
+          ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
+        }),
       });
 
       if (!startResponse.ok) {
@@ -347,6 +437,8 @@
 
       const { job_id: jobId } = await startResponse.json();
       const statusUrl = apiUrl.replace(/\/$/, "") + "/" + jobId;
+      currentJobId = jobId;
+      stopBtn.disabled = false;
 
       let renderedCount = 0;
       while (true) {
@@ -361,7 +453,7 @@
         const { status, events } = await pollResponse.json();
 
         for (; renderedCount < events.length; renderedCount++) {
-          applyEvent(events[renderedCount], bubbleState);
+          applyEvent(events[renderedCount], bubbleState, apiUrl);
         }
 
         if (status !== "running") break;
@@ -376,6 +468,24 @@
       // spinning forever.
       hideThinking();
       sendBtn.disabled = false;
+      stopBtn.disabled = true;
+      currentJobId = null;
+    }
+  });
+
+  stopBtn.addEventListener("click", async () => {
+    if (!currentJobId) return;
+    const apiUrl = apiUrlInput.value.trim();
+    const stopUrl = apiUrl.replace(/\/$/, "") + "/" + currentJobId + "/stop";
+    stopBtn.disabled = true;
+    try {
+      // The polling loop above picks up the resulting "stopped" event (and
+      // the job's "cancelled" status) on its next poll — no need to do
+      // anything else here.
+      await fetch(stopUrl, { method: "POST" });
+    } catch (err) {
+      addMessage("error", "Failed to stop: " + String(err));
+      stopBtn.disabled = false;
     }
   });
 </script>

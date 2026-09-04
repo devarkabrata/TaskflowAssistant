@@ -15,10 +15,11 @@ fetches it directly via `TaskFlowClient` — no LLM involved, no tool-calling
 round trip — the first time a thread runs, and caches the result in
 `state["current_user"]`. That's a plain checkpointed field (see
 `schema/state.py`), so it survives for the rest of the conversation: every
-later turn's call to this node is a cheap no-op. `flow_nodes/main_agent.py`
-then injects the cached profile into the system prompt so the model already
-knows it on every turn, and is told not to call the `get_current_user` tool
-again unless the user explicitly asks for a refresh.
+later turn's call to this node is a cheap no-op. `flow_nodes/specialist_agent.py`
+(and `flow_nodes/supervisor.py`) then inject the cached profile into their
+prompts so the model already knows it on every turn, and is told not to call
+the `get_current_user` tool again unless the user explicitly asks for a
+refresh.
 """
 
 from taskflowassistant.agent.schema.state import TaskFlowState

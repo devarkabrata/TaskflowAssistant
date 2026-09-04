@@ -34,16 +34,28 @@ anything other than "running".
 
 The agent itself is a hand-built LangGraph `StateGraph` (see
 `agent/graph_executor.py`), not LangChain's `create_agent` — this module was
-migrated off `create_agent` and its middleware system. Two consequences that
-shape the streaming code below:
-  - The model-invoking node is named "agent" (not "model", which is what
-    `create_agent`'s own internal graph used to call it).
+migrated off `create_agent` and its middleware system, and later split into a
+supervisor + domain-specialist multi-agent design (one small tool-bound
+model per domain instead of one model bound to all ~40 tools — see
+`agent/flow_nodes/supervisor.py`). Consequences that shape the streaming
+code below:
+  - There is no single "agent" node anymore — `agent/graph_executor.py`'s
+    `SPECIALIST_NODE_NAMES` names one model-invoking node per domain (e.g.
+    "task_agent", "team_agent", ...). The supervisor picks exactly one to
+    start (its only routing call per turn — see flow_nodes/supervisor.py),
+    but a specialist can explicitly hand off to another domain via a real
+    `handoff_to_X` tool call (agent/handoff_tools.py), so more than one of
+    these node names can run across a single turn — just never more than
+    one AT a time, so at most one is ever present in a given "updates" chunk.
+  - The "supervisor" node's own update (just a routing decision, no
+    `messages` key) is deliberately not handled below — it's internal
+    bookkeeping the user should never see, the same as "summarize"'s.
   - `create_agent`'s middleware system used to tag its summarizer's own model
     call as "internal" so it never leaked into the `messages` stream (see
     `langchain.agents.middleware.internal_call_transformer`). A hand-built
     graph has no such mechanism, so `agent/flow_nodes/summarizer.py`'s own
     `summarizer_model.ainvoke(...)` call streams through `stream_mode=
-    "messages"` exactly like the real agent's — the only way to tell them
+    "messages"` exactly like a specialist's — the only way to tell them
     apart is `metadata["langgraph_node"]`, which is why every chunk below is
     filtered on that before being buffered.
 
@@ -62,12 +74,24 @@ from typing import Literal
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from langchain_core.exceptions import ModelError
 from langchain_core.messages import AIMessageChunk
 from pydantic import BaseModel
 from starlette.background import BackgroundTask
 
-from taskflowassistant.agent.graph_executor import build_compiled_graph
+from taskflowassistant.agent.graph_executor import (
+    SPECIALIST_NODE_NAMES,
+    SPECIALIST_TOOL_NODE_NAMES,
+    build_compiled_graph,
+)
+from taskflowassistant.connection.config import config
 from taskflowassistant.dedicated_tools.store import get_file, release_file
+
+# The set of model-invoking / tool-executing node names in the current graph
+# (one pair per domain specialist) — see graph_executor.py and this module's
+# docstring.
+_SPECIALIST_NODE_NAMES = set(SPECIALIST_NODE_NAMES.values())
+_SPECIALIST_TOOL_NODE_NAMES = set(SPECIALIST_TOOL_NODE_NAMES.values())
 
 app = FastAPI(title="TaskFlow Agent")
 
@@ -226,8 +250,8 @@ async def _run_agent_job(
 
         async def consume() -> None:
             # "messages" mode streams AI text for EVERY model call anywhere in
-            # the graph — not just the "agent" node's, and not just the last
-            # step. Two distinct things must be kept out of the visible
+            # the graph — not just the active specialist's, and not just the
+            # last step. Two distinct things must be kept out of the visible
             # "token" stream:
             #   1. `agent/flow_nodes/summarizer.py`'s OWN model call (it runs
             #      in the "summarize" node) — this hand-built graph has none
@@ -237,14 +261,18 @@ async def _run_agent_job(
             #      checked as each chunk arrives — cheapest and most reliable
             #      place to stop it, since it's dropped before ever reaching
             #      the buffer.
-            #   2. Real "agent" node text from a step that goes on to call a
-            #      tool (the model "thinking out loud" — restating its plan,
-            #      summarizing progress). Real output, but not the answer.
-            #      Can't classify this until the step finishes, so it's
-            #      buffered and only labeled once the matching "updates"
-            #      chunk arrives: tool_calls present -> "reasoning" (shown
-            #      separately, muted); no tool_calls -> the actual answer,
-            #      "token".
+            #   2. Real specialist node text from a step that goes on to call a
+            #      tool — including an explicit handoff tool call (agent/
+            #      handoff_tools.py) — the model "thinking out loud" or
+            #      handing off, not the final answer. Can't classify this
+            #      until the step finishes, so it's buffered and only
+            #      labeled once the matching "updates" chunk arrives:
+            #      tool_calls present -> "reasoning" (shown separately,
+            #      muted); no tool_calls at all -> the actual final answer,
+            #      "token" — a specialist that calls no tool (including no
+            #      handoff) is, by construction, always the turn's last word
+            #      (see graph_executor.py's `_route_after_summarize`), so
+            #      this can be decided immediately, no deferral needed.
             pending_text: list[str] = []
 
             async for stream_mode, chunk in agent.astream(
@@ -253,8 +281,9 @@ async def _run_agent_job(
                 stream_mode=["messages", "updates"],
             ):
                 if stream_mode == "updates":
-                    if "agent" in chunk:
-                        ai_message = chunk["agent"]["messages"][0]
+                    agent_key = next((name for name in _SPECIALIST_NODE_NAMES if name in chunk), None)
+                    if agent_key:
+                        ai_message = chunk[agent_key]["messages"][0]
                         raw_text = "".join(pending_text)
                         text = _strip_leaked_scaffolding(raw_text)
                         pending_text = []
@@ -265,15 +294,16 @@ async def _run_agent_job(
                             text = (
                                 "I got sidetracked while working on that — could you ask again?"
                             )
+                        event_type = "reasoning" if ai_message.tool_calls else "token"
                         if text:
-                            event_type = "reasoning" if ai_message.tool_calls else "token"
                             job["events"].append({"type": event_type, "content": text})
                         for call in ai_message.tool_calls:
                             job["events"].append(
                                 {"type": "tool_call", "tool": call["name"], "args": call["args"]}
                             )
-                    if "tools" in chunk:
-                        for tool_message in chunk["tools"]["messages"]:
+                    tool_key = next((name for name in _SPECIALIST_TOOL_NODE_NAMES if name in chunk), None)
+                    if tool_key:
+                        for tool_message in chunk[tool_key]["messages"]:
                             output_text = _extract_text(tool_message.content)
                             file_event = (
                                 _file_event_from_tool_output(output_text)
@@ -289,11 +319,9 @@ async def _run_agent_job(
                                 }
                             )
                     if "limit_reached" in chunk:
-                        # graph_executor.py's step-limit guard: the agent
-                        # wanted to keep calling tools but hit
-                        # MODEL_CALL_LIMIT_PER_RUN. Its message is a plain,
-                        # fixed notice — always the real (and final) answer
-                        # for this turn.
+                        # model_limit.py's per-run step-limit guard tripped.
+                        # Its message is a plain, fixed notice — always the
+                        # real (and final) answer for this turn.
                         limit_message = chunk["limit_reached"]["messages"][0]
                         job["events"].append({"type": "token", "content": _extract_text(limit_message.content)})
                     # "summarize" node updates (RemoveMessage/HumanMessage
@@ -302,9 +330,9 @@ async def _run_agent_job(
                     # the user should never see.
                 elif stream_mode == "messages":
                     message_chunk, metadata = chunk
-                    # Only the real "agent" node's own streamed text counts —
+                    # Only a real specialist node's own streamed text counts —
                     # see the "summarize" node's leak risk explained above.
-                    if metadata.get("langgraph_node") != "agent":
+                    if metadata.get("langgraph_node") not in _SPECIALIST_NODE_NAMES:
                         continue
                     # "messages" mode also carries ToolMessages (already
                     # reported via "tool_result" above) — only record actual
@@ -342,6 +370,24 @@ async def _run_agent_job(
         job["status"] = "cancelled"
         job["events"].append({"type": "stopped", "message": "Stopped by request. You can resume by typing Continue"})
         raise
+    except ModelError as exc:
+        # langchain_core's provider-agnostic model-failure hierarchy — covers
+        # rate limits (429), server errors (5xx, e.g. Gemini's own "504
+        # Deadline expired" when ITS backend is slow/overloaded — not
+        # something LLM_TIMEOUT_SECONDS/LLM_MAX_RETRIES in connection/
+        # config.py can prevent, only bound how long we keep retrying it),
+        # timeouts, and connection failures uniformly. `str(exc)` on the raw
+        # provider exception is the ugly nested-JSON blob the SDK gets back
+        # — `exc.is_retryable` is enough to give a clean, honest message
+        # without repeating that.
+        message = (
+            "The AI provider had a temporary problem responding to this request "
+            "(a rate limit or a brief outage on their side) — please try again."
+            if exc.is_retryable
+            else f"The AI provider rejected this request ({type(exc).__name__}): {exc}"
+        )
+        job["events"].append({"type": "error", "message": message})
+        job["status"] = "error"
     except Exception as exc:
         job["events"].append({"type": "error", "message": str(exc)})
         job["status"] = "error"
@@ -422,8 +468,19 @@ async def download_file(file_id: str):
 
 @app.get("/health")
 async def health() -> dict:
-    """Health check for Render (and anything else pinging the service)."""
-    return {"success": True, "message": "Taskflow Agent is UP and RUNNING..."}
+    """Health check for Render (and anything else pinging the service).
+
+    Echoes the resolved model config so a stale env var (this process is
+    still running on whatever GEMINI_MODEL/GEMINI_SUMMARIZER_MODEL was set
+    when it started — see connection/config.py's @lru_cache) is a one-request
+    check instead of a LangSmith trace dig.
+    """
+    return {
+        "success": True,
+        "message": "Taskflow Agent is UP and RUNNING...",
+        "geminiModel": config["GEMINI_MODEL"],
+        "geminiSummarizerModel": config["GEMINI_SUMMARIZER_MODEL"],
+    }
 
 
 def run() -> None:

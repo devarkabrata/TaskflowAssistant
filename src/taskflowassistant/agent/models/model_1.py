@@ -22,5 +22,7 @@ def build_model(thinking_level: str | None = None):
         api_key=config["GEMINI_API_KEY"],
         temperature=config["LLM_TEMPERATURE"],
         max_tokens=config["LLM_MAX_TOKENS"],
+        timeout=config["LLM_TIMEOUT_SECONDS"],
+        max_retries=config["LLM_MAX_RETRIES"],
         **kwargs,
     )
