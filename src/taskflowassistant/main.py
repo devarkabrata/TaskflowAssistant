@@ -57,6 +57,7 @@ import re
 import sys
 import time
 import uuid
+from typing import Literal
 
 from fastapi import FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -85,6 +86,10 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
     thread_id: str
+    # Per-request Gemini reasoning effort for the main agent model only (the
+    # summarizer is always fixed at "medium" — see agent/models/model_2.py).
+    # Omit to leave Gemini's own default thinking behavior in place.
+    thinking_level: Literal["minimal", "low", "medium", "high"] | None = None
 
 
 # In-memory job store: job_id -> {"status", "events", "created_at"}. Fine for
@@ -194,7 +199,13 @@ def _strip_leaked_scaffolding(text: str) -> str:
     return ""
 
 
-async def _run_agent_job(job_id: str, message: str, thread_id: str, taskflow_token: str) -> None:
+async def _run_agent_job(
+    job_id: str,
+    message: str,
+    thread_id: str,
+    taskflow_token: str,
+    thinking_level: str | None = None,
+) -> None:
     """Run the agent to completion, appending events to the job as they occur.
 
     Builds a fresh agent (and its MCP subprocess) for this one job, so the
@@ -211,7 +222,7 @@ async def _run_agent_job(job_id: str, message: str, thread_id: str, taskflow_tok
     """
     job = jobs[job_id]
     try:
-        agent = await build_compiled_graph(taskflow_token=taskflow_token)
+        agent = await build_compiled_graph(taskflow_token=taskflow_token, thinking_level=thinking_level)
 
         async def consume() -> None:
             # "messages" mode streams AI text for EVERY model call anywhere in
@@ -355,7 +366,9 @@ async def chat(request: ChatRequest, authorization: str = Header(...)):
 
     job_id = str(uuid.uuid4())
     jobs[job_id] = {"status": "running", "events": [], "created_at": time.monotonic(), "task": None}
-    task = asyncio.create_task(_run_agent_job(job_id, request.message, request.thread_id, taskflow_token))
+    task = asyncio.create_task(
+        _run_agent_job(job_id, request.message, request.thread_id, taskflow_token, request.thinking_level)
+    )
     jobs[job_id]["task"] = task
 
     return {"job_id": job_id}

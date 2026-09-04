@@ -9,10 +9,10 @@ from taskflowassistant.agent.flow_nodes.summarizer import maybe_summarize_node
 from taskflowassistant.agent.schema.state import TaskFlowState
 from taskflowassistant.agent.memory import checkpointer
 
-async def build_graph(taskflow_token: str | None = None):
+async def build_graph(taskflow_token: str | None = None, thinking_level: str | None = None):
 
     # Extract Nodes
-    agent_node, tools = await make_agent_node(taskflow_token)
+    agent_node, tools = await make_agent_node(taskflow_token, thinking_level)
     tool_node = ToolNode(tools)
 
     graph = StateGraph(TaskFlowState)
@@ -42,6 +42,6 @@ async def build_graph(taskflow_token: str | None = None):
     return graph
 
 
-async def build_compiled_graph(taskflow_token: str | None = None):
-    graph = await build_graph(taskflow_token)
+async def build_compiled_graph(taskflow_token: str | None = None, thinking_level: str | None = None):
+    graph = await build_graph(taskflow_token, thinking_level)
     return graph.compile(checkpointer=checkpointer)

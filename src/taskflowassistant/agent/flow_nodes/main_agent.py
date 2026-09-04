@@ -15,9 +15,9 @@ conversation unless the user explicitly asks you to refresh it):
 {profile}"""
 
 
-async def make_agent_node(taskflow_token: str | None):
+async def make_agent_node(taskflow_token: str | None, thinking_level: str | None = None):
     tools = await get_tools(taskflow_token)
-    model_with_tool = build_model().bind_tools(tools)
+    model_with_tool = build_model(thinking_level).bind_tools(tools)
     system_prompt = get_system_prompt()
 
     async def agent_node(state: TaskFlowState) -> dict:
