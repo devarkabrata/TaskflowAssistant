@@ -39,7 +39,11 @@ from langchain_core.messages import SystemMessage
 from pydantic import BaseModel, Field
 
 from taskflowassistant.agent.flow_nodes._identity import IDENTITY_BLOCK_TEMPLATE
-from taskflowassistant.agent.message_utils import ensure_valid_trailing_turn, strip_thought_signatures
+from taskflowassistant.agent.message_utils import (
+    ensure_non_empty_tool_content,
+    ensure_valid_trailing_turn,
+    strip_thought_signatures,
+)
 from taskflowassistant.agent.models.model_1 import build_model
 from taskflowassistant.agent.schema.state import TaskFlowState
 from taskflowassistant.prompts.system_prompt import get_supervisor_prompt
@@ -73,7 +77,9 @@ def make_supervisor_node(model_provider: str | None = None, model_name: str | No
         if current_user:
             prompt += IDENTITY_BLOCK_TEMPLATE.format(profile=json.dumps(current_user, indent=2))
 
-        conversation = ensure_valid_trailing_turn(strip_thought_signatures(state["messages"]))
+        conversation = ensure_valid_trailing_turn(
+        ensure_non_empty_tool_content(strip_thought_signatures(state["messages"]))
+    )
         messages = [SystemMessage(content=prompt), *conversation]
         decision: _RouteDecision = await router_model.ainvoke(messages)
 

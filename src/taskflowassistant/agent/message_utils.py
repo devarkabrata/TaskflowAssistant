@@ -18,7 +18,9 @@ against the real API while debugging this:
     of any prompt/logic bug in the routing decision).
 """
 
-from langchain_core.messages import AIMessage, AnyMessage, HumanMessage
+from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, ToolMessage
+
+_EMPTY_TOOL_RESULT_PLACEHOLDER = "(no data returned)"
 
 # Some Gemini models (e.g. gemini-3.5-flash-lite, gemini-3.6-flash — see
 # langchain_google_genai.chat_models._FIXED_SAMPLING_AND_NO_PREFILL_MODELS)
@@ -81,6 +83,30 @@ def ensure_valid_trailing_turn(messages: list[AnyMessage]) -> list[AnyMessage]:
     if messages and isinstance(messages[-1], AIMessage):
         return [*messages, _CONTINUATION_PLACEHOLDER]
     return messages
+
+
+def ensure_non_empty_tool_content(messages: list[AnyMessage]) -> list[AnyMessage]:
+    """Replace any ToolMessage's genuinely empty content (`""` or `[]`) with
+    a placeholder before it reaches any model.
+
+    Reproduced directly: a tool call that legitimately returns "nothing" —
+    the RAG retriever finding zero matches, an MCP tool like `list_teams`
+    returning an empty list — can end up as a ToolMessage with EMPTY
+    content once it passes through LangChain's/MCP's own serialization.
+    Gemini tolerates an empty tool-result content; Groq's stricter
+    OpenAI-compatible schema rejects the whole request outright ("for
+    'role:tool' ... minimum number of items is 1"). Fixed at the source for
+    the RAG tool (rag/retriever.py), but MCP tools' own empty-result
+    serialization isn't ours to control — this is the general, permanent
+    backstop so no tool, present or future, can trigger this again.
+    """
+    sanitized = []
+    for message in messages:
+        if isinstance(message, ToolMessage) and not message.content:
+            sanitized.append(message.model_copy(update={"content": _EMPTY_TOOL_RESULT_PLACEHOLDER}))
+        else:
+            sanitized.append(message)
+    return sanitized
 
 
 def estimate_token_count(messages: list[AnyMessage]) -> int:
