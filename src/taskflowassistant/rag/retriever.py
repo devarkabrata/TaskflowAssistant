@@ -2,6 +2,8 @@
 can call to search the TaskFlow knowledge base.
 """
 
+from functools import lru_cache
+
 from langchain_core.documents import Document
 from langchain_core.tools import BaseTool, tool
 
@@ -27,8 +29,18 @@ def _format_docs(docs: list[Document]) -> str:
     return "\n\n".join(doc.page_content for doc in docs)
 
 
+@lru_cache(maxsize=1)
 def get_retriever_tool() -> BaseTool:
-    """Build the 'search_knowledge_base' tool for the agent."""
+    """Build the 'search_knowledge_base' tool for the agent.
+
+    Cached: `get_vectorstore(async_mode=True)` is itself cached (see
+    rag/vectorstore.py), so the only thing rebuilt here without caching
+    would be the `as_retriever(...)` wrapper and the tool closure — cheap
+    individually, but there's no reason to redo either on every chat message
+    either, since neither depends on any per-request state (this is the
+    shared knowledge-base search, not scoped to a specific caller/token like
+    the MCP tools in agent/tools_registry.py are).
+    """
     # async_mode=True: the agent only ever calls this tool via ainvoke(),
     # which needs PGVector's async engine/session, not the sync one.
     retriever = get_vectorstore(async_mode=True).as_retriever(search_kwargs={"k": 4})

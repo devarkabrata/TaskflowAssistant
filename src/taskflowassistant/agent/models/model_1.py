@@ -10,7 +10,20 @@ to here (see flow_nodes/supervisor.py and flow_nodes/specialist_agent.py).
 (connection/config.py's GEMINI_EMBEDDING_MODEL) is unaffected by any of
 this — it stays on Gemini regardless of what a request picks for chat, and
 so does the summarizer (agent/models/model_2.py).
+
+`build_model` is `@lru_cache`d: every graph build (currently once per chat
+message — see agent/graph_executor.py) calls this once for the supervisor
+and once per specialist, almost always with the same
+(thinking_level, model_provider, model_name) triple as the previous message
+in the same conversation. Caching means that triple's `init_chat_model(...)`
+client is only actually constructed once and reused after that, instead of
+rebuilt on every message. `maxsize=64` bounds the cache rather than leaving
+it unbounded, since `model_name` is caller-supplied free text — comfortably
+above the realistic number of distinct configs any deployment would
+actually use, so real traffic never evicts a live entry.
 """
+
+from functools import lru_cache
 
 from langchain.chat_models import init_chat_model
 from taskflowassistant.connection.config import config
@@ -35,6 +48,7 @@ _PROVIDER_API_KEYS = {
 _PROVIDERS_SUPPORTING_THINKING_CONFIG = {"google_genai"}
 
 
+@lru_cache(maxsize=64)
 def build_model(
     thinking_level: str | None = None,
     model_provider: str | None = None,

@@ -69,6 +69,7 @@ import re
 import sys
 import time
 import uuid
+from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import FastAPI, Header, HTTPException
@@ -87,6 +88,7 @@ from taskflowassistant.agent.graph_executor import (
 )
 from taskflowassistant.connection.config import config
 from taskflowassistant.dedicated_tools.store import get_file, release_file
+from taskflowassistant.mcp.client import close_all_mcp_sessions
 
 # The set of model-invoking / tool-executing node names in the current graph
 # (one pair per domain specialist) — see graph_executor.py and this module's
@@ -94,7 +96,16 @@ from taskflowassistant.dedicated_tools.store import get_file, release_file
 _SPECIALIST_NODE_NAMES = set(SPECIALIST_NODE_NAMES.values())
 _SPECIALIST_TOOL_NODE_NAMES = set(SPECIALIST_TOOL_NODE_NAMES.values())
 
-app = FastAPI(title="TaskFlow Agent")
+@asynccontextmanager
+async def _lifespan(_: FastAPI):
+    yield
+    # `mcp/client.py` now keeps each caller's MCP session (and, for stdio,
+    # its subprocess) alive across messages instead of tearing it down after
+    # every one — close them here so none outlive this process.
+    await close_all_mcp_sessions()
+
+
+app = FastAPI(title="TaskFlow Agent", lifespan=_lifespan)
 
 # Permissive for now — this is a test/dev CORS policy so a plain local HTML
 # page (or any frontend) can call this API directly from the browser.

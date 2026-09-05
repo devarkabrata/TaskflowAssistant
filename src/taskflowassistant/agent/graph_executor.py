@@ -1,3 +1,5 @@
+from collections import OrderedDict
+
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langgraph.prebuilt import ToolNode
 from langgraph.graph import StateGraph, START, END
@@ -160,6 +162,26 @@ async def build_graph(
     return graph
 
 
+# Caches the fully COMPILED graph itself, keyed on everything that could
+# actually change its shape or the models/tools wired into it. With
+# mcp/client.py's MCP session cache, rag/vectorstore.py's vectorstore cache,
+# and agent/models/model_1.py's model-client cache all warm, rebuilding the
+# graph from scratch costs ~70ms (measured) — no I/O left in it, just
+# StateGraph/`.compile()` bookkeeping and `bind_tools()`/
+# `with_structured_output()` wrapping. That's cheap enough that a single
+# shared graph across every caller isn't worth the risk it would take to get
+# there (LangGraph's `ToolNode` binds a fixed tool list at construction time,
+# and each caller's MCP tools are distinct objects scoped to their own token
+# — sharing one graph across callers would mean hand-reimplementing
+# `ToolNode`'s dispatch to pick the right caller's tools per invocation,
+# real correctness surface for a further ~70ms). Caching per-key instead
+# reuses the exact same LangGraph pattern already used everywhere else here
+# (one compiled graph, invoked many times with different thread_ids) while
+# keeping each caller's tools/models fully isolated.
+_MAX_CACHED_GRAPHS = 128
+_compiled_graph_cache: OrderedDict[tuple, object] = OrderedDict()
+
+
 async def build_compiled_graph(
     taskflow_token: str | None = None,
     thinking_level: str | None = None,
@@ -168,6 +190,30 @@ async def build_compiled_graph(
     summarizer_model_provider: str | None = None,
     summarizer_model_name: str | None = None,
 ):
+    """Return the compiled graph for this exact config, building it once and
+    reusing it for every later call with the same arguments.
+
+    Every argument is part of the cache key — a message reusing all of them
+    (the common case: same caller, same model choices as their last message)
+    gets back the same compiled graph instance instead of a fresh rebuild;
+    changing any one of them (a token refresh, switching model_provider, ...)
+    naturally misses the cache and builds a new entry, same as before. Bounded
+    to `_MAX_CACHED_GRAPHS` least-recently-used entries so a long-running
+    deployment with many distinct callers/configs doesn't grow this forever.
+    """
+    key = (
+        taskflow_token,
+        thinking_level,
+        model_provider,
+        model_name,
+        summarizer_model_provider,
+        summarizer_model_name,
+    )
+    cached = _compiled_graph_cache.get(key)
+    if cached is not None:
+        _compiled_graph_cache.move_to_end(key)
+        return cached
+
     graph = await build_graph(
         taskflow_token,
         thinking_level,
@@ -176,4 +222,9 @@ async def build_compiled_graph(
         summarizer_model_provider,
         summarizer_model_name,
     )
-    return graph.compile(checkpointer=checkpointer)
+    compiled = graph.compile(checkpointer=checkpointer)
+
+    _compiled_graph_cache[key] = compiled
+    if len(_compiled_graph_cache) > _MAX_CACHED_GRAPHS:
+        _compiled_graph_cache.popitem(last=False)
+    return compiled
