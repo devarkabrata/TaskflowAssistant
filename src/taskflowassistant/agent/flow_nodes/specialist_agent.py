@@ -20,14 +20,23 @@ from taskflowassistant.agent.schema.state import TaskFlowState
 from taskflowassistant.prompts.system_prompt import get_domain_system_prompt
 
 
-def make_specialist_node(domain: str, tools: list[BaseTool], thinking_level: str | None = None):
+def make_specialist_node(
+    domain: str,
+    tools: list[BaseTool],
+    thinking_level: str | None = None,
+    model_provider: str | None = None,
+    model_name: str | None = None,
+):
     """Return the agent node function for one specialist domain.
 
     `tools` must already be scoped to this domain (see
     tools_registry.py's get_tool_bundle) — this function only builds the
-    node, it doesn't decide what belongs in it.
+    node, it doesn't decide what belongs in it. `model_provider`/`model_name`
+    come from the same POST /chat payload as `thinking_level` (see
+    agent/models/model_1.py) — every specialist for a given turn shares the
+    caller's one choice of provider/model.
     """
-    model_with_tools = build_model(thinking_level).bind_tools(tools)
+    model_with_tools = build_model(thinking_level, model_provider, model_name).bind_tools(tools)
     system_prompt = get_domain_system_prompt(domain)
 
     async def specialist_node(state: TaskFlowState) -> dict:

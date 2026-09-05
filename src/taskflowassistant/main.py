@@ -76,9 +76,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from langchain_core.exceptions import ModelError
 from langchain_core.messages import AIMessageChunk
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 from starlette.background import BackgroundTask
 
+from taskflowassistant.agent.models.model_1 import SUPPORTED_MODEL_PROVIDERS
 from taskflowassistant.agent.graph_executor import (
     SPECIALIST_NODE_NAMES,
     SPECIALIST_TOOL_NODE_NAMES,
@@ -110,10 +111,39 @@ app.add_middleware(
 class ChatRequest(BaseModel):
     message: str
     thread_id: str
-    # Per-request Gemini reasoning effort for the main agent model only (the
+    # Per-request reasoning effort for the supervisor + specialists only (the
     # summarizer is always fixed at "medium" — see agent/models/model_2.py).
-    # Omit to leave Gemini's own default thinking behavior in place.
+    # Only has an effect on providers that support it (currently just Gemini
+    # — see agent/models/model_1.py's _PROVIDERS_SUPPORTING_THINKING_CONFIG).
+    # Omit to leave the model's own default thinking behavior in place.
     thinking_level: Literal["minimal", "low", "medium", "high"] | None = None
+    # Which provider/model the supervisor + every specialist should use for
+    # this turn (agent/models/model_1.py) — NOT the summarizer or the RAG
+    # embedding model. Must be given together, or both omitted (falls back
+    # to the deployment default: Gemini, config["GEMINI_MODEL"]).
+    model_provider: str | None = None
+    model_name: str | None = None
+    # Same idea, but for the summarizer specifically (agent/flow_nodes/
+    # summarizer.py) — kept separate from model_provider/model_name above
+    # since the summarizer deliberately defaults to its OWN model
+    # (config["GEMINI_SUMMARIZER_MODEL"]), not whatever the main model is.
+    # The RAG embedding model is still unaffected by this — always Gemini.
+    summarizer_model_provider: str | None = None
+    summarizer_model_name: str | None = None
+
+    @model_validator(mode="after")
+    def _check_model_override(self) -> "ChatRequest":
+        for provider, name, label in (
+            (self.model_provider, self.model_name, "model"),
+            (self.summarizer_model_provider, self.summarizer_model_name, "summarizer_model"),
+        ):
+            if provider is not None and provider not in SUPPORTED_MODEL_PROVIDERS:
+                raise ValueError(
+                    f"Unsupported {label}_provider '{provider}'. Supported: {', '.join(SUPPORTED_MODEL_PROVIDERS)}."
+                )
+            if (provider is None) != (name is None):
+                raise ValueError(f"{label}_provider and {label}_name must be given together, or both omitted.")
+        return self
 
 
 # In-memory job store: job_id -> {"status", "events", "created_at"}. Fine for
@@ -229,6 +259,10 @@ async def _run_agent_job(
     thread_id: str,
     taskflow_token: str,
     thinking_level: str | None = None,
+    model_provider: str | None = None,
+    model_name: str | None = None,
+    summarizer_model_provider: str | None = None,
+    summarizer_model_name: str | None = None,
 ) -> None:
     """Run the agent to completion, appending events to the job as they occur.
 
@@ -246,7 +280,14 @@ async def _run_agent_job(
     """
     job = jobs[job_id]
     try:
-        agent = await build_compiled_graph(taskflow_token=taskflow_token, thinking_level=thinking_level)
+        agent = await build_compiled_graph(
+            taskflow_token=taskflow_token,
+            thinking_level=thinking_level,
+            model_provider=model_provider,
+            model_name=model_name,
+            summarizer_model_provider=summarizer_model_provider,
+            summarizer_model_name=summarizer_model_name,
+        )
 
         async def consume() -> None:
             # "messages" mode streams AI text for EVERY model call anywhere in
@@ -413,7 +454,17 @@ async def chat(request: ChatRequest, authorization: str = Header(...)):
     job_id = str(uuid.uuid4())
     jobs[job_id] = {"status": "running", "events": [], "created_at": time.monotonic(), "task": None}
     task = asyncio.create_task(
-        _run_agent_job(job_id, request.message, request.thread_id, taskflow_token, request.thinking_level)
+        _run_agent_job(
+            job_id,
+            request.message,
+            request.thread_id,
+            taskflow_token,
+            request.thinking_level,
+            request.model_provider,
+            request.model_name,
+            request.summarizer_model_provider,
+            request.summarizer_model_name,
+        )
     )
     jobs[job_id]["task"] = task
 

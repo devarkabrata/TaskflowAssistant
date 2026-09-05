@@ -252,6 +252,30 @@
       </select>
     </div>
   </div>
+  <div class="config-row">
+    <div>
+      <label for="modelSelect">model (supervisor + every specialist — NOT the summarizer, see below, and NOT the RAG embedding model, always Gemini)</label>
+      <select id="modelSelect">
+        <option value="">(deployment default)</option>
+        <option value='{"provider":"google_genai","model":"gemini-3.5-flash-lite"}'>Gemini 3.5 Flash-Lite</option>
+        <option value='{"provider":"google_genai","model":"gemini-3.5-flash"}'>Gemini 3.5 Flash</option>
+        <option value='{"provider":"groq","model":"openai/gpt-oss-120b"}'>Groq — GPT-OSS 120B</option>
+        <option value='{"provider":"groq","model":"openai/gpt-oss-20b"}'>Groq — GPT-OSS 20B</option>
+        <option value='{"provider":"groq","model":"qwen/qwen3.6-27b"}'>Groq — Qwen3.6 27B</option>
+      </select>
+    </div>
+    <div>
+      <label for="summarizerModelSelect">summarizer model (independent of the model above — defaults to its own Gemini model)</label>
+      <select id="summarizerModelSelect">
+        <option value="">(deployment default)</option>
+        <option value='{"provider":"google_genai","model":"gemini-3.5-flash-lite"}'>Gemini 3.5 Flash-Lite</option>
+        <option value='{"provider":"google_genai","model":"gemini-3.5-flash"}'>Gemini 3.5 Flash</option>
+        <option value='{"provider":"groq","model":"openai/gpt-oss-120b"}'>Groq — GPT-OSS 120B</option>
+        <option value='{"provider":"groq","model":"openai/gpt-oss-20b"}'>Groq — GPT-OSS 20B</option>
+        <option value='{"provider":"groq","model":"qwen/qwen3.6-27b"}'>Groq — Qwen3.6 27B</option>
+      </select>
+    </div>
+  </div>
 </div>
 
 <div id="log"></div>
@@ -270,6 +294,16 @@
   const tokenInput = document.getElementById("tokenInput");
   const threadIdInput = document.getElementById("threadIdInput");
   const thinkingLevelInput = document.getElementById("thinkingLevelInput");
+  const modelSelect = document.getElementById("modelSelect");
+  const summarizerModelSelect = document.getElementById("summarizerModelSelect");
+
+  // Each <option>'s value is a JSON object {provider, model} (see
+  // index.html's <select> above) so picking one option sets both fields
+  // together, atomically — there's no way to end up with just one of the
+  // two set. "" (the default option) means "no override", not an object.
+  function parseModelSelection(selectEl) {
+    return selectEl.value ? JSON.parse(selectEl.value) : null;
+  }
   const sendBtn = document.getElementById("sendBtn");
   const stopBtn = document.getElementById("stopBtn");
 
@@ -389,6 +423,8 @@
     const threadId = threadIdInput.value.trim();
     const apiUrl = apiUrlInput.value.trim();
     const thinkingLevel = thinkingLevelInput.value;
+    const modelSelection = parseModelSelection(modelSelect);
+    const summarizerModelSelection = parseModelSelection(summarizerModelSelect);
 
     if (!message) return;
     if (!token) {
@@ -425,6 +461,18 @@
           // it lets Gemini's own default thinking behavior apply, matching
           // ChatRequest.thinking_level being optional (main.py).
           ...(thinkingLevel ? { thinking_level: thinkingLevel } : {}),
+          // provider+model always come from the same selected <option>, so
+          // this is never a partial pair (main.py's _check_model_override
+          // would reject that, but it can't happen from this UI).
+          ...(modelSelection
+            ? { model_provider: modelSelection.provider, model_name: modelSelection.model }
+            : {}),
+          ...(summarizerModelSelection
+            ? {
+                summarizer_model_provider: summarizerModelSelection.provider,
+                summarizer_model_name: summarizerModelSelection.model,
+              }
+            : {}),
         }),
       });
 

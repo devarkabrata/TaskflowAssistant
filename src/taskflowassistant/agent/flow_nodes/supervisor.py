@@ -25,6 +25,11 @@ that domain directly — a deterministic string comparison, not a second
 model judgment. This node never needs to be re-entered as a result, which is
 also why it no longer needs its own call-limit guard: it always runs with
 `llm_calls == 0` for this run.
+
+`model_provider`/`model_name` (see agent/models/model_1.py) apply here too,
+same as every specialist — the caller's POST /chat payload picks one
+provider/model for the whole turn, supervisor included; only the embedding
+model (RAG) and the summarizer stay fixed to Gemini regardless.
 """
 
 import json
@@ -49,24 +54,32 @@ class _RouteDecision(BaseModel):
     specialist: RouteChoice = Field(..., description="Which specialist should handle this request.")
 
 
-# Module-level singleton, like flow_nodes/summarizer.py's summarizer_model —
-# built once per process, not once per request. "minimal" thinking is fixed
-# here (not the caller's own thinking_level) because classifying into one of
-# five buckets needs no real reasoning budget.
-_router_model = build_model(thinking_level="minimal").with_structured_output(_RouteDecision)
+def make_supervisor_node(model_provider: str | None = None, model_name: str | None = None):
+    """Return the supervisor node function for one graph build.
 
+    Built fresh per request (like flow_nodes/specialist_agent.py's
+    make_specialist_node) rather than as a module-level singleton, since it
+    now needs to honor the caller's own model_provider/model_name — "minimal"
+    thinking stays fixed regardless, only the underlying provider/model are
+    caller-controlled.
+    """
+    router_model = build_model(
+        thinking_level="minimal", model_provider=model_provider, model_name=model_name
+    ).with_structured_output(_RouteDecision)
 
-async def supervisor_node(state: TaskFlowState) -> dict:
-    prompt = get_supervisor_prompt()
-    current_user = state.get("current_user")
-    if current_user:
-        prompt += IDENTITY_BLOCK_TEMPLATE.format(profile=json.dumps(current_user, indent=2))
+    async def supervisor_node(state: TaskFlowState) -> dict:
+        prompt = get_supervisor_prompt()
+        current_user = state.get("current_user")
+        if current_user:
+            prompt += IDENTITY_BLOCK_TEMPLATE.format(profile=json.dumps(current_user, indent=2))
 
-    conversation = ensure_valid_trailing_turn(strip_thought_signatures(state["messages"]))
-    messages = [SystemMessage(content=prompt), *conversation]
-    decision: _RouteDecision = await _router_model.ainvoke(messages)
+        conversation = ensure_valid_trailing_turn(strip_thought_signatures(state["messages"]))
+        messages = [SystemMessage(content=prompt), *conversation]
+        decision: _RouteDecision = await router_model.ainvoke(messages)
 
-    return {
-        "active_specialist": decision.specialist,
-        "llm_calls": state.get("llm_calls", 0) + 1,
-    }
+        return {
+            "active_specialist": decision.specialist,
+            "llm_calls": state.get("llm_calls", 0) + 1,
+        }
+
+    return supervisor_node

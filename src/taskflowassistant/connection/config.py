@@ -24,6 +24,10 @@ def get_config() -> dict:
     return {
         "GEMINI_API_KEY": os.environ.get("GEMINI_API_KEY", ""),
         "GEMINI_MODEL": os.environ.get("GEMINI_MODEL", "gemini-2.0-flash"),
+        # Only used for chat (agent/models/model_1.py) when a request's
+        # model_provider is "groq" — never for embeddings, which stay on
+        # Gemini regardless (see GEMINI_EMBEDDING_MODEL below).
+        "GROQ_API_KEY": os.environ.get("GROQ_API_KEY", ""),
         "GEMINI_EMBEDDING_MODEL": os.environ.get(
             "GEMINI_EMBEDDING_MODEL", "models/text-embedding-004"
         ),

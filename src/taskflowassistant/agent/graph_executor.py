@@ -4,9 +4,9 @@ from langgraph.graph import StateGraph, START, END
 
 from taskflowassistant.agent.flow_nodes.hydrate_user import hydrate_user_node
 from taskflowassistant.agent.flow_nodes.specialist_agent import make_specialist_node
-from taskflowassistant.agent.flow_nodes.supervisor import supervisor_node
+from taskflowassistant.agent.flow_nodes.supervisor import make_supervisor_node
 from taskflowassistant.agent.flow_nodes.model_limit import limit_reached_node, route_after_agent
-from taskflowassistant.agent.flow_nodes.summarizer import maybe_summarize_node
+from taskflowassistant.agent.flow_nodes.summarizer import make_summarize_node
 from taskflowassistant.agent.handoff_tools import HANDOFF_TOOL_PREFIX
 
 from taskflowassistant.agent.schema.state import TaskFlowState
@@ -69,7 +69,14 @@ def _route_after_summarize(state: TaskFlowState) -> str:
     return END
 
 
-async def build_graph(taskflow_token: str | None = None, thinking_level: str | None = None):
+async def build_graph(
+    taskflow_token: str | None = None,
+    thinking_level: str | None = None,
+    model_provider: str | None = None,
+    model_name: str | None = None,
+    summarizer_model_provider: str | None = None,
+    summarizer_model_name: str | None = None,
+):
 
     # One MCP subprocess spawn for this whole job — see tools_registry.py's
     # docstring for why every domain's tools are derived from one load.
@@ -79,13 +86,21 @@ async def build_graph(taskflow_token: str | None = None, thinking_level: str | N
 
     # ==== NODES ====
     graph.add_node("hydrate_user", hydrate_user_node)
-    graph.add_node("summarize", maybe_summarize_node)
-    graph.add_node("supervisor", supervisor_node)
+    # summarizer_model_provider/summarizer_model_name are separate from
+    # model_provider/model_name below — see agent/flow_nodes/summarizer.py's
+    # make_summarize_node docstring for why. Only the RAG embedding model
+    # stays fixed to Gemini regardless of any of this.
+    graph.add_node("summarize", make_summarize_node(summarizer_model_provider, summarizer_model_name))
+    # model_provider/model_name apply to the supervisor and every specialist
+    # alike — the caller's one choice for the whole turn (agent/models/
+    # model_1.py).
+    graph.add_node("supervisor", make_supervisor_node(model_provider, model_name))
     graph.add_node("limit_reached", limit_reached_node)
 
     for domain in SPECIALIST_NAMES:
         tools = grouped_tools[domain]
-        graph.add_node(SPECIALIST_NODE_NAMES[domain], make_specialist_node(domain, tools, thinking_level))
+        specialist_node = make_specialist_node(domain, tools, thinking_level, model_provider, model_name)
+        graph.add_node(SPECIALIST_NODE_NAMES[domain], specialist_node)
         graph.add_node(SPECIALIST_TOOL_NODE_NAMES[domain], ToolNode(tools))
 
     # ==== EDGES ====
@@ -145,6 +160,20 @@ async def build_graph(taskflow_token: str | None = None, thinking_level: str | N
     return graph
 
 
-async def build_compiled_graph(taskflow_token: str | None = None, thinking_level: str | None = None):
-    graph = await build_graph(taskflow_token, thinking_level)
+async def build_compiled_graph(
+    taskflow_token: str | None = None,
+    thinking_level: str | None = None,
+    model_provider: str | None = None,
+    model_name: str | None = None,
+    summarizer_model_provider: str | None = None,
+    summarizer_model_name: str | None = None,
+):
+    graph = await build_graph(
+        taskflow_token,
+        thinking_level,
+        model_provider,
+        model_name,
+        summarizer_model_provider,
+        summarizer_model_name,
+    )
     return graph.compile(checkpointer=checkpointer)

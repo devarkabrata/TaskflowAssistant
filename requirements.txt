@@ -5,6 +5,7 @@ langchain
 langchain-classic
 langchain-community
 langchain-google-genai
+langchain-groq
 langchain-mcp-adapters
 langchain-postgres
 langchain-text-splitters

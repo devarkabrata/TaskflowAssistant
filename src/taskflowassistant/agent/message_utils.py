@@ -81,3 +81,22 @@ def ensure_valid_trailing_turn(messages: list[AnyMessage]) -> list[AnyMessage]:
     if messages and isinstance(messages[-1], AIMessage):
         return [*messages, _CONTINUATION_PLACEHOLDER]
     return messages
+
+
+def estimate_token_count(messages: list[AnyMessage]) -> int:
+    """Cheap, provider-agnostic token estimate (~4 characters per token, the
+    same rule of thumb OpenAI's own docs use) — good enough to decide
+    whether flow_nodes/summarizer.py should trim the conversation, not
+    meant to be exact.
+
+    Deliberately does NOT call `BaseChatModel.get_num_tokens_from_messages()`
+    on whichever model is configured: Gemini has its own token-counting API,
+    but a provider with no native one (confirmed live for ChatGroq) falls
+    back to langchain_core's default implementation, which needs the
+    `transformers` package installed — a real crash, reproduced directly,
+    once the summarizer's own provider became caller-selectable (see
+    summarizer_model_provider/summarizer_model_name on ChatRequest) instead
+    of always being Gemini. This sidesteps that fallback entirely, for any
+    provider, present or future.
+    """
+    return sum(len(_content_to_text(m.content)) for m in messages) // 4

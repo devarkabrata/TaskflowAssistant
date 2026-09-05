@@ -1,5 +1,6 @@
 from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveMessage, ToolMessage
 from langchain_core.messages.utils import get_buffer_string
+from taskflowassistant.agent.message_utils import estimate_token_count
 from taskflowassistant.agent.schema.state import TaskFlowState
 from taskflowassistant.agent.models.model_2 import build_summarizer_model
 
@@ -105,31 +106,43 @@ def _safe_cutoff_index(messages: list[AnyMessage], cutoff_index: int) -> int:
     return idx
 
 
-# Create a summarizer
-summarizer_model = build_summarizer_model()
+def make_summarize_node(model_provider: str | None = None, model_name: str | None = None):
+    """Return the "summarize" node function for one graph build.
 
-async def maybe_summarize_node(state: TaskFlowState) -> dict:
-    messages = state["messages"]
+    Built fresh per request (like flow_nodes/supervisor.py's
+    make_supervisor_node) rather than as a module-level singleton, since the
+    summarizer's own provider/model are now caller-controlled too (main.py's
+    ChatRequest.summarizer_model_provider/summarizer_model_name) — separate
+    from the supervisor/specialists' model_provider/model_name, since the
+    summarizer deliberately defaults to its own (usually cheaper) model
+    (config["GEMINI_SUMMARIZER_MODEL"]), not whatever the main model is.
+    """
+    summarizer_model = build_summarizer_model(model_provider, model_name)
 
-    if summarizer_model.get_num_tokens_from_messages(messages) <= TOKEN_TRIGGER:
-        return {}
+    async def maybe_summarize_node(state: TaskFlowState) -> dict:
+        messages = state["messages"]
 
-    cutoff_index = _safe_cutoff_index(messages, max(0, len(messages) - KEEP_LAST))
-    to_summarize = messages[:cutoff_index]
-    if not to_summarize:
-        return {}
+        if estimate_token_count(messages) <= TOKEN_TRIGGER:
+            return {}
 
-    # `get_buffer_string` renders each message as readable
-    # "<Role>: <content>" text — `.format(messages=to_summarize)` alone would
-    # instead interpolate Python's raw repr of the message objects
-    # (`[HumanMessage(content='...', id='...'), ...]`), which is noisy and
-    # wastes tokens for no benefit to the summarizer.
-    formatted = _TASKFLOW_SUMMARY_PROMPT.format(
-        messages=get_buffer_string(to_summarize, format="xml")
-    )
-    summary = await summarizer_model.ainvoke(formatted)
+        cutoff_index = _safe_cutoff_index(messages, max(0, len(messages) - KEEP_LAST))
+        to_summarize = messages[:cutoff_index]
+        if not to_summarize:
+            return {}
 
-    return {
-        "messages": [RemoveMessage(id=m.id) for m in to_summarize if m.id]
-        + [HumanMessage(content=summary.content, additional_kwargs={"lc_source": "summarization"})]
-    }
+        # `get_buffer_string` renders each message as readable
+        # "<Role>: <content>" text — `.format(messages=to_summarize)` alone would
+        # instead interpolate Python's raw repr of the message objects
+        # (`[HumanMessage(content='...', id='...'), ...]`), which is noisy and
+        # wastes tokens for no benefit to the summarizer.
+        formatted = _TASKFLOW_SUMMARY_PROMPT.format(
+            messages=get_buffer_string(to_summarize, format="xml")
+        )
+        summary = await summarizer_model.ainvoke(formatted)
+
+        return {
+            "messages": [RemoveMessage(id=m.id) for m in to_summarize if m.id]
+            + [HumanMessage(content=summary.content, additional_kwargs={"lc_source": "summarization"})]
+        }
+
+    return maybe_summarize_node
