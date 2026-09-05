@@ -257,6 +257,7 @@
       <label for="modelSelect">model (supervisor + every specialist — NOT the summarizer, see below, and NOT the RAG embedding model, always Gemini)</label>
       <select id="modelSelect">
         <option value="">(deployment default)</option>
+        <option value='{"provider":"google_genai","model":"gemini-3.1-flash-lite"}'>Gemini 3.1 Flash-Lite</option>
         <option value='{"provider":"google_genai","model":"gemini-3.5-flash-lite"}'>Gemini 3.5 Flash-Lite</option>
         <option value='{"provider":"google_genai","model":"gemini-3.5-flash"}'>Gemini 3.5 Flash</option>
         <option value='{"provider":"groq","model":"openai/gpt-oss-120b"}'>Groq — GPT-OSS 120B</option>
@@ -268,6 +269,7 @@
       <label for="summarizerModelSelect">summarizer model (independent of the model above — defaults to its own Gemini model)</label>
       <select id="summarizerModelSelect">
         <option value="">(deployment default)</option>
+        <option value='{"provider":"google_genai","model":"gemini-3.1-flash-lite"}'>Gemini 3.1 Flash-Lite</option>
         <option value='{"provider":"google_genai","model":"gemini-3.5-flash-lite"}'>Gemini 3.5 Flash-Lite</option>
         <option value='{"provider":"google_genai","model":"gemini-3.5-flash"}'>Gemini 3.5 Flash</option>
         <option value='{"provider":"groq","model":"openai/gpt-oss-120b"}'>Groq — GPT-OSS 120B</option>

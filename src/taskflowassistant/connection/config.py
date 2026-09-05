@@ -41,9 +41,6 @@ def get_config() -> dict:
         # that 180s lets a stuck call retry and still finish inside the job.
         "LLM_TIMEOUT_SECONDS": int(os.environ.get("LLM_TIMEOUT_SECONDS", "45")),
         "LLM_MAX_RETRIES": int(os.environ.get("LLM_MAX_RETRIES", "2")),
-        "MODEL_CALL_LIMIT_PER_THREAD": int(
-            os.environ.get("MODEL_CALL_LIMIT_PER_THREAD", "20")
-        ),
         "MODEL_CALL_LIMIT_PER_RUN": int(os.environ.get("MODEL_CALL_LIMIT_PER_RUN", "10")),
         "GEMINI_SUMMARIZER_MODEL": os.environ.get("GEMINI_SUMMARIZER_MODEL", "gemini-2.0-flash"),
         "TASKFLOW_API_BASE_URL": os.environ.get("TASKFLOW_API_BASE_URL", "http://localhost:5000"),
