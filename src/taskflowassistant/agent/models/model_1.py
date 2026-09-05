@@ -87,3 +87,31 @@ def build_model(
         max_retries=config["LLM_MAX_RETRIES"],
         **kwargs,
     )
+
+
+# Observed in production: a raw `TimeoutError` from aiohttp (Gemini's async
+# transport) propagating out of a streaming call. `max_retries` above is the
+# provider SDK's OWN retry (google-genai's tenacity wrapper) — it only
+# retries specific HTTP status codes and httpx's own timeout/connect
+# exceptions, neither of which matches a bare `TimeoutError`/`ConnectionError`
+# surfacing from aiohttp, so that class of failure was never actually
+# retried despite passing through a retry-shaped wrapper. This is a second,
+# independent retry layer at our side to cover exactly that gap.
+#
+# Must be applied AFTER `.bind_tools()`/`.with_structured_output()`, not
+# wrapped around the bare `build_model(...)` result — `Runnable.with_retry()`
+# returns a generic `RunnableRetry`, which drops chat-model-specific methods
+# like `bind_tools`/`with_structured_output` (confirmed: calling either on a
+# `.with_retry()`-wrapped bare model raises `AttributeError`). Applied last,
+# after those, it only needs to support `.ainvoke()`, which it does.
+_CONNECTION_RETRY_EXCEPTIONS = (TimeoutError, ConnectionError)
+
+
+def with_connection_retry(runnable):
+    """Wrap an already-bound/structured chat runnable with our own retry for
+    connection-level failures the provider SDK's own retry doesn't cover.
+    """
+    return runnable.with_retry(
+        retry_if_exception_type=_CONNECTION_RETRY_EXCEPTIONS,
+        stop_after_attempt=3,
+    )

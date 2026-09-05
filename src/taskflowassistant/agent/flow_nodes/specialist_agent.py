@@ -19,7 +19,7 @@ from taskflowassistant.agent.message_utils import (
     ensure_valid_trailing_turn,
     strip_thought_signatures,
 )
-from taskflowassistant.agent.models.model_1 import build_model
+from taskflowassistant.agent.models.model_1 import build_model, with_connection_retry
 from taskflowassistant.agent.schema.state import TaskFlowState
 from taskflowassistant.prompts.system_prompt import get_domain_system_prompt
 
@@ -40,7 +40,7 @@ def make_specialist_node(
     agent/models/model_1.py) — every specialist for a given turn shares the
     caller's one choice of provider/model.
     """
-    model_with_tools = build_model(thinking_level, model_provider, model_name).bind_tools(tools)
+    model_with_tools = with_connection_retry(build_model(thinking_level, model_provider, model_name).bind_tools(tools))
     system_prompt = get_domain_system_prompt(domain)
 
     async def specialist_node(state: TaskFlowState) -> dict:

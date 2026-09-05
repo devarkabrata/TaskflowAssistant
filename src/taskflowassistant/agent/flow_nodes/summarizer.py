@@ -2,6 +2,7 @@ from langchain_core.messages import AIMessage, AnyMessage, HumanMessage, RemoveM
 from langchain_core.messages.utils import get_buffer_string
 from taskflowassistant.agent.message_utils import estimate_token_count
 from taskflowassistant.agent.schema.state import TaskFlowState
+from taskflowassistant.agent.models.model_1 import with_connection_retry
 from taskflowassistant.agent.models.model_2 import build_summarizer_model
 
 KEEP_LAST = 12
@@ -117,7 +118,7 @@ def make_summarize_node(model_provider: str | None = None, model_name: str | Non
     summarizer deliberately defaults to its own (usually cheaper) model
     (config["GEMINI_SUMMARIZER_MODEL"]), not whatever the main model is.
     """
-    summarizer_model = build_summarizer_model(model_provider, model_name)
+    summarizer_model = with_connection_retry(build_summarizer_model(model_provider, model_name))
 
     async def maybe_summarize_node(state: TaskFlowState) -> dict:
         messages = state["messages"]

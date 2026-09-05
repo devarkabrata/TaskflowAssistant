@@ -44,7 +44,7 @@ from taskflowassistant.agent.message_utils import (
     ensure_valid_trailing_turn,
     strip_thought_signatures,
 )
-from taskflowassistant.agent.models.model_1 import build_model
+from taskflowassistant.agent.models.model_1 import build_model, with_connection_retry
 from taskflowassistant.agent.schema.state import TaskFlowState
 from taskflowassistant.prompts.system_prompt import get_supervisor_prompt
 
@@ -67,9 +67,11 @@ def make_supervisor_node(model_provider: str | None = None, model_name: str | No
     thinking stays fixed regardless, only the underlying provider/model are
     caller-controlled.
     """
-    router_model = build_model(
-        thinking_level="minimal", model_provider=model_provider, model_name=model_name
-    ).with_structured_output(_RouteDecision)
+    router_model = with_connection_retry(
+        build_model(
+            thinking_level="minimal", model_provider=model_provider, model_name=model_name
+        ).with_structured_output(_RouteDecision)
+    )
 
     async def supervisor_node(state: TaskFlowState) -> dict:
         prompt = get_supervisor_prompt()
