@@ -152,9 +152,8 @@ class TaskFlowClient:
         return _unwrap(response)
 
     # --- Teams (TeamController) ---
-    # NOTE: GetMyTeams really is at `/teams` with no `/api` prefix, unlike
-    # every other Teams endpoint below — confirmed against the live
-    # collection, not a typo here.
+    # No `/api` prefix on any Teams route — same as every other controller
+    # here except the ones that say otherwise in their own docstring below.
 
     async def list_teams(self, exclude_workspace: bool = False) -> Any:
         """GET /teams (TeamController.GetMyTeams)"""
@@ -163,45 +162,45 @@ class TaskFlowClient:
         return _unwrap(response)
 
     async def get_team(self, team_id: uuid.UUID | str) -> Any:
-        """GET /api/teams/{teamId}"""
+        """GET /teams/{teamId}"""
         client = self._require_client()
-        response = await client.get(f"/api/teams/{team_id}")
+        response = await client.get(f"/teams/{team_id}")
         return _unwrap(response)
 
     async def get_team_stats(self) -> Any:
-        """GET /api/teams/stats"""
+        """GET /teams/stats"""
         client = self._require_client()
-        response = await client.get("/api/teams/stats")
+        response = await client.get("/teams/stats")
         return _unwrap(response)
 
     async def create_team(self, team: dict[str, Any]) -> Any:
-        """POST /api/teams"""
+        """POST /teams"""
         client = self._require_client()
-        response = await client.post("/api/teams", json=team)
+        response = await client.post("/teams", json=team)
         return _unwrap(response)
 
     async def update_team(self, team_id: uuid.UUID | str, updates: dict[str, Any]) -> Any:
-        """PUT /api/teams/{teamId}"""
+        """PUT /teams/{teamId}"""
         client = self._require_client()
-        response = await client.put(f"/api/teams/{team_id}", json=updates)
+        response = await client.put(f"/teams/{team_id}", json=updates)
         return _unwrap(response)
 
     async def delete_team(self, team_id: uuid.UUID | str) -> Any:
-        """DELETE /api/teams/{teamId}"""
+        """DELETE /teams/{teamId}"""
         client = self._require_client()
-        response = await client.delete(f"/api/teams/{team_id}")
+        response = await client.delete(f"/teams/{team_id}")
         return _unwrap(response)
 
     async def invite_to_team(self, team_id: uuid.UUID | str, body: dict[str, Any]) -> Any:
-        """POST /api/teams/{teamId}/invite — requires the caller's role to have `Manage`."""
+        """POST /teams/{teamId}/invite — requires the caller's role to have `Manage`."""
         client = self._require_client()
-        response = await client.post(f"/api/teams/{team_id}/invite", json=body)
+        response = await client.post(f"/teams/{team_id}/invite", json=body)
         return _unwrap(response)
 
     async def remove_team_member(self, team_id: uuid.UUID | str, target_user_id: uuid.UUID | str) -> Any:
-        """DELETE /api/teams/{teamId}/members/{targetUserId}"""
+        """DELETE /teams/{teamId}/members/{targetUserId}"""
         client = self._require_client()
-        response = await client.delete(f"/api/teams/{team_id}/members/{target_user_id}")
+        response = await client.delete(f"/teams/{team_id}/members/{target_user_id}")
         return _unwrap(response)
 
     # --- Roles (RoleController) ---
@@ -232,9 +231,9 @@ class TaskFlowClient:
     # --- Workspace (WorkspaceController) ---
 
     async def get_workspace_info(self, workspace_id: uuid.UUID | str) -> Any:
-        """GET /api/workspace/{workspaceId}/info"""
+        """GET /workspace/{workspaceId}/info"""
         client = self._require_client()
-        response = await client.get(f"/api/workspace/{workspace_id}/info")
+        response = await client.get(f"/workspace/{workspace_id}/info")
         return _unwrap(response)
 
     # --- People / workspace membership (PeopleController, /people) ---
@@ -294,9 +293,7 @@ class TaskFlowClient:
         return _unwrap(response)
 
     # --- Users (UserController) ---
-    # NOTE: `update_user` really is under `/api/users/{id}`; every other
-    # Users endpoint below has no `/api` prefix — confirmed against the live
-    # collection, not a typo here.
+    # No `/api` prefix on any Users route either.
 
     async def list_users(self, params: dict[str, Any] | None = None) -> Any:
         """GET /users"""
@@ -311,9 +308,9 @@ class TaskFlowClient:
         return _unwrap(response)
 
     async def update_user_profile(self, user_id: uuid.UUID | str, updates: dict[str, Any]) -> Any:
-        """PUT /api/users/{userId}"""
+        """PUT /users/{userId}"""
         client = self._require_client()
-        response = await client.put(f"/api/users/{user_id}", json=updates)
+        response = await client.put(f"/users/{user_id}", json=updates)
         return _unwrap(response)
 
     async def get_user_settings(self, user_id: uuid.UUID | str) -> Any:
