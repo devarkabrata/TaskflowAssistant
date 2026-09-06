@@ -348,10 +348,10 @@ async def _run_agent_job(
                             )
                         event_type = "reasoning" if ai_message.tool_calls else "token"
                         if text:
-                            job["events"].append({"type": event_type, "content": text})
+                            job["events"].append({"type": event_type, "content": text, "agent": agent_key})
                         for call in ai_message.tool_calls:
                             job["events"].append(
-                                {"type": "tool_call", "tool": call["name"], "args": call["args"]}
+                                {"type": "tool_call", "tool": call["name"], "args": call["args"], "agent": agent_key}
                             )
                     tool_key = next((name for name in _SPECIALIST_TOOL_NODE_NAMES if name in chunk), None)
                     if tool_key:
@@ -368,6 +368,7 @@ async def _run_agent_job(
                                     "type": "tool_result",
                                     "tool": tool_message.name,
                                     "output": output_text,
+                                    "agent": tool_key,
                                 }
                             )
                     if "limit_reached" in chunk:

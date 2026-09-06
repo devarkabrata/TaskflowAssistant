@@ -48,26 +48,63 @@ def _route_after_tools(domain: str):
     return router
 
 
+def _is_summary_message(message) -> bool:
+    """True for `flow_nodes/summarizer.py`'s own injected HumanMessage.
+
+    Tagged `additional_kwargs={"lc_source": "summarization"}` there — private
+    working memory, never a real new user turn (see that module's docstring),
+    but `add_messages` always appends a genuinely-new-id message at the very
+    end of `state["messages"]`, even when `summarize` was reached via a
+    handoff. Without this check, that synthetic message becomes `messages[-1]`
+    and is indistinguishable from a fresh user turn below.
+    """
+    return isinstance(message, HumanMessage) and message.additional_kwargs.get("lc_source") == "summarization"
+
+
 def _route_after_summarize(state: TaskFlowState) -> str:
     """`summarize` is reached from three different places, and its own
-    outgoing edge is read directly off the last message rather than a
+    outgoing edge is read directly off recent messages rather than a
     separately-maintained state field — no extra bookkeeping to keep in sync:
       - hydrate_user (turn start): last message is the user's fresh
         HumanMessage -> go to the supervisor for the turn's one routing call.
       - a specialist's own "no more tool calls" branch (route_after_agent's
         END case): last message is that specialist's own plain final answer
         -> the turn is over.
-      - `_route_after_tools` above, after a handoff tool executed: last
-        message is a ToolMessage named "handoff_to_<domain>" -> go straight
-        to that domain's specialist. Deterministic string parsing, no model
-        call — see agent/handoff_tools.py's module docstring for why.
+      - `_route_after_tools` above, after a handoff tool executed: one of
+        this step's ToolMessages is named "handoff_to_<domain>" -> go
+        straight to that domain's specialist. Deterministic string parsing,
+        no model call — see agent/handoff_tools.py's module docstring for
+        why.
+
+    Trailing summarizer messages (`_is_summary_message`) are skipped first so
+    a real summarization pass landing on the same step as a handoff can't
+    masquerade as "a fresh user turn arrived" and erase the pending handoff.
+
+    The handoff case then scans backward over that step's ToolMessages
+    (stopping at the AIMessage that issued them) instead of trusting the
+    single message found above: ToolNode runs a step's tool calls
+    concurrently and appends results in the model's own tool_calls order, so
+    a handoff call mixed with another tool call in the same step isn't
+    guaranteed to produce the last ToolMessage.
     """
-    last_message = state["messages"][-1]
+    messages = state["messages"]
+    index = len(messages) - 1
+    while index >= 0 and _is_summary_message(messages[index]):
+        index -= 1
+    if index < 0:
+        return END
+
+    last_message = messages[index]
     if isinstance(last_message, HumanMessage):
         return "supervisor"
-    if isinstance(last_message, ToolMessage) and (last_message.name or "").startswith(HANDOFF_TOOL_PREFIX):
-        target_domain = last_message.name[len(HANDOFF_TOOL_PREFIX):]
-        return SPECIALIST_NODE_NAMES[target_domain]
+    if isinstance(last_message, AIMessage):
+        return END
+    for message in reversed(messages[: index + 1]):
+        if isinstance(message, AIMessage):
+            break
+        if isinstance(message, ToolMessage) and (message.name or "").startswith(HANDOFF_TOOL_PREFIX):
+            target_domain = message.name[len(HANDOFF_TOOL_PREFIX):]
+            return SPECIALIST_NODE_NAMES[target_domain]
     return END
 
 
