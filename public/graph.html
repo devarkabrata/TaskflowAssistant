@@ -7,7 +7,7 @@
 <style>
   :root{
     --bg:#f6f7fb; --panel-bg:#ffffff; --ink:#1c2333; --muted:#5b6478; --border:#dde1ea;
-    --seq:#6b7280; --route:#7c3aed; --handoff:#ea7c1f; --loop:#16a34a; --limit:#dc2626; --end:#2563eb; --owns:#b7bccb;
+    --seq:#6b7280; --route:#7c3aed; --handoff:#ea7c1f; --loop:#16a34a; --limit:#dc2626; --end:#2563eb; --owns:#b7bccb; --rag:#db2777;
     --node-io:#e5e7eb; --node-book:#dbeafe; --node-agent:#dcfce7; --node-tools:#cffafe; --node-limit:#fee2e2; --node-leaf:#f4f4f6;
     --shadow: 0 1px 2px rgba(20,20,40,.06), 0 6px 16px rgba(20,20,40,.06);
   }
@@ -63,6 +63,21 @@
   .node.leaf{background:var(--node-leaf); border-radius:20px; align-items:center;}
   .node.leaf .name{font-size:9.5px; font-weight:600; text-align:center; width:100%;}
 
+  .node.rag-tool{background:linear-gradient(135deg,#fce7f3,#fbcfe8); border:1.5px solid var(--rag); box-shadow:0 0 0 3px rgba(219,39,119,.12), var(--shadow);}
+  .node.rag-tool .name{font-size:14px; font-weight:800; color:#9d174d; letter-spacing:.01em;}
+  .node.rag-tool:hover{border-color:var(--rag);}
+
+  .node.ragflow{background:#fdf2f8; border:1.25px dashed #f0abc4; display:none;}
+  .node.ragflow .tag{color:#be185d;}
+  .node.ragstore{background:#fce7f3; border:1.5px solid var(--rag);}
+  .node.ragstore .name{font-weight:800; color:#9d174d;}
+
+  .rag-toggle{display:flex; align-items:center; gap:8px; font-size:13px; font-weight:700; color:#9d174d;
+    background:#fdf2f8; border:1px solid #fbcfe8; padding:6px 12px; border-radius:8px; margin:2px 0 10px;
+    width:fit-content; cursor:pointer; user-select:none;}
+  .rag-toggle input{accent-color:var(--rag); cursor:pointer; width:15px; height:15px;}
+  .rag-toggle code{background:#fff; padding:1px 5px; border-radius:4px; font-size:12px; font-weight:700;}
+
   .controls{position:absolute; right:10px; top:10px; z-index:10; display:flex; flex-direction:column; gap:4px;}
   .controls button{width:28px; height:28px; border-radius:6px; border:1px solid var(--border); background:#fff; cursor:pointer; font-size:15px; box-shadow:var(--shadow);}
   .controls button:hover{background:#f1f2f6;}
@@ -99,6 +114,10 @@
     drag any box to rearrange, scroll/pinch or use the +/− controls to zoom, drag empty space to pan.
     Click a box or a connector line for a full explanation of what it does and why.
   </p>
+  <label class="rag-toggle" for="rag-toggle">
+    <input type="checkbox" id="rag-toggle">
+    Show the RAG pipeline behind <code>search_knowledge_base</code> — ingestion &amp; retrieval flow
+  </label>
   <div class="legend">
     <label><span class="swatch" style="border-color:var(--seq)"></span><input type="checkbox" data-cat="seq" checked> Sequential</label>
     <label><span class="swatch" style="border-color:var(--route)"></span><input type="checkbox" data-cat="route" checked> Supervisor routing</label>
@@ -137,7 +156,7 @@
 </aside>
 
 <script>
-const CANVAS_W = 1320, CANVAS_H = 900;
+const CANVAS_W = 1440, CANVAS_H = 1160;
 
 const DOMAINS = [
   { key:"task", cx:140, label:"Tasks & boards",
@@ -251,8 +270,11 @@ DOMAINS.forEach(d=>{
     <p>Executes whatever the specialist just called: a domain MCP tool, <code>export_document</code>, or a <code>handoff_to_&lt;domain&gt;</code> tool — LangGraph's <code>ToolNode</code> doesn't distinguish these; that distinction is made afterward by <code>_route_after_tools</code>, purely by tool <b>name</b>.</p>` };
   d.tools.forEach(t=>{
     const id = `tool::${d.key}::${t}`;
-    NODES[id] = { tag:`Tool · ${d.label}`, w:LEAF_W, h:LEAF_H, cls:"leaf", label:t, sub:"", isLeaf:true,
-      body:`<p><code>${t}</code></p><p>${TOOL_DESC[t] || "MCP tool."}</p><p>Bound only to <code>${d.key}_agent</code>, executed only by <code>${d.key}_tools</code>.</p>` };
+    const isRag = t === "search_knowledge_base";
+    NODES[id] = { tag:`Tool · ${d.label}`, w: isRag ? 118 : LEAF_W, h: isRag ? 30 : LEAF_H, cls:"leaf"+(isRag?" rag-tool":""),
+      label:t, sub:"", isLeaf:true, isRag,
+      body:`<p><code>${t}</code></p><p>${TOOL_DESC[t] || "MCP tool."}</p><p>Bound only to <code>${d.key}_agent</code>, executed only by <code>${d.key}_tools</code>.</p>`
+        + (isRag ? `<div class="fixnote"><b>This is the RAG tool.</b><p style="margin:6px 0 0">It's the only tool the knowledge specialist has, and the only place in the whole graph that talks to a vector store instead of the TaskFlow HTTP API. Flip <b>"Show the RAG pipeline"</b> at the top of the page to see the full ingestion + retrieval flow behind it.</p></div>` : "") };
   });
 });
 
@@ -282,8 +304,53 @@ DOMAINS.forEach(d=>{
   });
 });
 
+place("tool::knowledge::search_knowledge_base", 1180 - NODES["tool::knowledge::search_knowledge_base"].w/2, 476);
 place("limit_reached", 845, 700);
 place("END", SPINE_CX-55, 780);
+
+// ---------- RAG pipeline (ingestion + retrieval behind search_knowledge_base) ----------
+// Two clean left-to-right swimlanes: ingestion (offline) on top, retrieval (live) below.
+const RAG_NODE_IDS = ["rag_kb","rag_extract","rag_chunk","rag_embed1","rag_store","rag_query","rag_embed2","rag_search","rag_chunks","rag_answer"];
+
+Object.assign(NODES, {
+  rag_kb:{ tag:"RAG · ingestion 1/5 · data/knowledge_base/", w:190, h:58, cls:"book ragflow", label:"Knowledge Base", sub:".txt · .md · .pdf files", body:`
+    <p>Source docs live under <code>KNOWLEDGE_BASE_DIR</code> (<code>data/knowledge_base/</code>). Anything not <code>.txt</code>/<code>.md</code>/<code>.pdf</code> is silently skipped.</p>
+    <p>Ingestion is an <b>offline, manual</b> step — run via <code>uv run python -m taskflowassistant.rag.ingest</code> (the <code>taskflow-ingest</code> console script), never part of the live chat graph. Safe to re-run after editing the source files; it just adds more chunks to the same collection.</p>` },
+  rag_extract:{ tag:"RAG · ingestion 2/5 · rag/loader.py", w:190, h:58, cls:"book ragflow", label:"Extract Text", sub:"load_documents() — TextLoader / PyPDFLoader", body:`
+    <p><code>load_documents()</code> walks the directory (<code>Path.rglob("*")</code>) and loads each file into a LangChain <code>Document</code>: <code>PyPDFLoader</code> for <code>.pdf</code> (one <code>Document</code> per page), <code>TextLoader</code> for <code>.txt</code>/<code>.md</code> (one <code>Document</code> per file).</p>` },
+  rag_chunk:{ tag:"RAG · ingestion 3/5 · rag/ingest.py", w:190, h:58, cls:"book ragflow", label:"Chunking", sub:"configs: CHUNK_SIZE / CHUNK_OVERLAP", body:`
+    <p><code>RecursiveCharacterTextSplitter</code>, configured from <code>config["CHUNK_SIZE"]</code> / <code>config["CHUNK_OVERLAP"]</code>, splits every loaded <code>Document</code> into overlapping chunks before embedding — keeps each embedded unit small enough to be a specific, useful retrieval match.</p>` },
+  rag_embed1:{ tag:"RAG · ingestion 4/5 · rag/vectorstore.py", w:190, h:58, cls:"tools ragflow", label:"Embedding Model", sub:"GoogleGenerativeAIEmbeddings", body:`
+    <p><code>get_embeddings()</code> builds a cached <code>GoogleGenerativeAIEmbeddings</code> client (<code>GEMINI_EMBEDDING_MODEL</code>) that turns each chunk's text into a vector.</p>` },
+  rag_store:{ tag:"RAG · ingestion 5/5 · rag/vectorstore.py", w:190, h:58, cls:"ragstore ragflow", label:"Store in pgvector", sub:"Supabase · PGVECTOR_COLLECTION_NAME", body:`
+    <p><code>vectorstore.add_documents(chunks)</code> writes each chunk plus its vector into <code>PGVector</code> — Supabase Postgres with the <code>pgvector</code> extension (<code>create_extension=True</code> runs <code>CREATE EXTENSION IF NOT EXISTS vector</code> on first connect).</p>
+    <p>Chosen over a local on-disk store because the app deploys on Render, whose disk is wiped on every redeploy — embedded data has to live in a separate managed database to persist. Safe to re-run ingestion after editing source docs; it only adds more chunks.</p>
+    <p>This is the exact same collection the retrieval lane below reads from.</p>` },
+
+  rag_query:{ tag:"RAG · retrieval 1/5 · rag/retriever.py", w:190, h:58, cls:"book ragflow", label:"User Query", sub:"search_knowledge_base(query)", body:`
+    <p><code>knowledge_agent</code> is the only specialist bound to this tool. Calling it hands the model's own query string straight into the retrieval pipeline.</p>` },
+  rag_embed2:{ tag:"RAG · retrieval 2/5 · rag/retriever.py", w:190, h:58, cls:"tools ragflow", label:"Embedding Model", sub:"same model, embeds the query", body:`
+    <p>Inside <code>as_retriever(...).ainvoke(query)</code>, the query string is embedded with the exact same <code>GoogleGenerativeAIEmbeddings</code> model used at ingestion time — a different model or config would put query and document vectors in incomparable spaces.</p>` },
+  rag_search:{ tag:"RAG · retrieval 3/5 · rag/retriever.py", w:190, h:58, cls:"tools ragflow", label:"Search pgvector", sub:"similarity_search · k=4", body:`
+    <p><code>get_vectorstore(async_mode=True).as_retriever(search_kwargs={"k": 4})</code> — an async similarity search against the same Supabase pgvector collection ingestion wrote to, returning the 4 nearest chunks by vector distance.</p>` },
+  rag_chunks:{ tag:"RAG · retrieval 4/5 · rag/retriever.py", w:190, h:58, cls:"book ragflow", label:"Retrieved Chunks", sub:"up to 4 nearest Documents", body:`
+    <p>Up to 4 nearest-neighbor <code>Document</code> chunks come back from the retriever, ready to be joined into one tool result.</p>` },
+  rag_answer:{ tag:"RAG · retrieval 5/5 · rag/retriever.py", w:190, h:58, cls:"ragstore ragflow", label:"Return to Agent", sub:"_format_docs() → ToolMessage", body:`
+    <p><code>_format_docs()</code> joins the chunks' <code>page_content</code> with <code>"\\n\\n"</code> — same convention as LangChain's own <code>create_retriever_tool</code> — <b>except</b> the empty case: joining zero docs gives an empty string, which Gemini tolerates as a tool result but Groq's stricter OpenAI-compatible schema rejects outright (a real 400 error, reproduced against a live "no matches" search). An empty match instead returns a fixed <code>"No results found in the TaskFlow knowledge base for that query."</code> message.</p>
+    <p>That string becomes the <code>ToolMessage</code> result of <code>search_knowledge_base</code>, landing back at <code>knowledge_tools</code> — a normal tool result, so <code>_route_after_tools</code> loops straight back to <code>knowledge_agent</code> with it in context.</p>` },
+});
+
+const RAG_COL_X = [60, 340, 620, 900, 1180];
+place("rag_kb",      RAG_COL_X[0], 900);
+place("rag_extract", RAG_COL_X[1], 900);
+place("rag_chunk",   RAG_COL_X[2], 900);
+place("rag_embed1",  RAG_COL_X[3], 900);
+place("rag_store",   RAG_COL_X[4], 900);
+place("rag_query",   RAG_COL_X[0], 1040);
+place("rag_embed2",  RAG_COL_X[1], 1040);
+place("rag_search",  RAG_COL_X[2], 1040);
+place("rag_chunks",  RAG_COL_X[3], 1040);
+place("rag_answer",  RAG_COL_X[4], 1040);
 
 // ---------- Structural edges ----------
 const HANDOFF_MECH = `<div class="fixnote"><b>Model-compliance note:</b>
@@ -319,6 +386,33 @@ DOMAINS.forEach(d=>{
   });
 });
 
+// ---------- RAG pipeline edges ----------
+EDGES.push(
+  // Ingestion lane (offline, left to right)
+  { from:"rag_kb", to:"rag_extract", cat:"rag", label:"rglob *.txt/*.md/*.pdf",
+    body:`<p>Every file under the knowledge-base directory, one <code>Document</code> per page (PDF) or per file (.txt/.md).</p>` },
+  { from:"rag_extract", to:"rag_chunk", cat:"rag", label:"chunk before embedding",
+    body:`<p>Loaded documents are handed straight to the splitter — chunking happens before embedding, never after.</p>` },
+  { from:"rag_chunk", to:"rag_embed1", cat:"rag", label:"one vector per chunk",
+    body:`<p>Each chunk produced by the splitter gets its own embedding vector.</p>` },
+  { from:"rag_embed1", to:"rag_store", cat:"rag", label:"add_documents() persists the vectors",
+    body:`<p><code>vectorstore.add_documents(chunks)</code> writes each chunk plus its vector into the pgvector collection. Safe to re-run after editing source docs — it only adds more chunks.</p>` },
+  // Retrieval lane (live, left to right)
+  { from:"tool::knowledge::search_knowledge_base", to:"rag_query", cat:"rag", label:"knowledge_agent calls the tool",
+    body:`<p><code>knowledge_agent</code> is the only specialist bound to this tool. Calling it hands the model's own query string into the retrieval pipeline.</p>` },
+  { from:"rag_query", to:"rag_embed2", cat:"rag", label:"",
+    body:`<p>The raw query string is embedded before it can be compared against anything in the store.</p>` },
+  { from:"rag_embed2", to:"rag_search", cat:"rag", label:"",
+    body:`<p>The embedded query vector is what similarity search actually compares against the stored chunk vectors.</p>` },
+  { from:"rag_search", to:"rag_chunks", cat:"rag", label:"",
+    body:`<p>Up to 4 nearest-neighbor <code>Document</code> chunks come back from the retriever.</p>` },
+  { from:"rag_chunks", to:"rag_answer", cat:"rag", label:"",
+    body:`<p>The retrieved chunks get joined into one tool result (or replaced with a fallback message if none matched).</p>` },
+  // The link between the two lanes: same physical collection, write vs. read
+  { from:"rag_store", to:"rag_search", cat:"rag", dash:"5,4", label:"same pgvector collection",
+    body:`<p>Retrieval reads from exactly the collection ingestion wrote to (<code>PGVECTOR_COLLECTION_NAME</code>) — there's no separate "live" index, it's the same Postgres table, same embeddings model, so query and document vectors are directly comparable.</p>` },
+);
+
 // ---------- Zones (visual grouping of node clusters) ----------
 const ZONES = [
   { label:"Routing & bookkeeping", color:"#2563eb", members:["START","hydrate_user","summarize","supervisor"] },
@@ -326,6 +420,8 @@ const ZONES = [
   { label:"Specialist tool nodes", color:"#0891b2", members: DOMAINS.map(d=>d.key+"_tools") },
   { label:"Tool catalog", color:"#6b7280", members: DOMAINS.flatMap(d=>d.tools.map(t=>`tool::${d.key}::${t}`)) },
   { label:"Guards & exit", color:"#dc2626", members:["limit_reached","END"] },
+  { label:"RAG ingestion pipeline (offline)", color:"#db2777", rag:true, members:["rag_kb","rag_extract","rag_chunk","rag_embed1","rag_store"] },
+  { label:"RAG retrieval pipeline (live, per query)", color:"#db2777", rag:true, members:["rag_query","rag_embed2","rag_search","rag_chunks","rag_answer"] },
 ];
 function drawZones(){
   const zonesEl = document.getElementById("zones");
@@ -340,11 +436,12 @@ function drawZones(){
     if (minX===Infinity) return;
     const pad=16;
     const div = document.createElement("div");
-    div.className = "zone";
+    div.className = "zone" + (z.rag ? " zone-rag" : "");
     div.style.left=(minX-pad)+"px"; div.style.top=(minY-pad)+"px";
     div.style.width=(maxX-minX+pad*2)+"px"; div.style.height=(maxY-minY+pad*2)+"px";
     div.style.borderColor=z.color+"66";
     div.style.background=z.color+"0d";
+    if (z.rag) div.style.display = ragVisible ? "" : "none";
     div.innerHTML = `<span class="zone-label" style="color:${z.color}">${z.label}</span>`;
     zonesEl.appendChild(div);
   });
@@ -390,8 +487,10 @@ function pathFor(a,b){
 function arrowHead(x,y,color){
   return `<path class="arrow" d="M ${x-5} ${y-8} L ${x} ${y} L ${x+5} ${y-8}" stroke="${color}" stroke-width="1.6" stroke-linecap="round" fill="none"/>`;
 }
-const CAT_COLOR = {seq:"var(--seq)", route:"var(--route)", handoff:"var(--handoff)", loop:"var(--loop)", limit:"var(--limit)", end:"var(--end)", owns:"var(--owns)"};
-const CAT_DASH  = {seq:"", route:"", handoff:"6,4", loop:"", limit:"6,4", end:"", owns:"3,3"};
+const CAT_COLOR = {seq:"var(--seq)", route:"var(--route)", handoff:"var(--handoff)", loop:"var(--loop)", limit:"var(--limit)", end:"var(--end)", owns:"var(--owns)", rag:"var(--rag)"};
+const CAT_DASH  = {seq:"", route:"", handoff:"6,4", loop:"", limit:"6,4", end:"", owns:"3,3", rag:""};
+
+let ragVisible = false;
 
 function drawEdges(){
   drawZones();
@@ -404,11 +503,19 @@ function drawEdges(){
     g.setAttribute("class","edge-group cat-"+e.cat);
     g.innerHTML = `
       <path class="hit" d="${d}"></path>
-      <path d="${d}" stroke="${color}" stroke-width="${e.cat==='owns'?1.2:2}" stroke-dasharray="${CAT_DASH[e.cat]}"></path>
+      <path d="${d}" stroke="${color}" stroke-width="${e.cat==='owns'?1.2:2}" stroke-dasharray="${e.dash ?? CAT_DASH[e.cat]}"></path>
       ${e.cat==='owns' ? '' : arrowHead(ex,ey,color)}
     `;
     g.addEventListener("click", (ev)=>{ ev.stopPropagation(); openPanel({kind:"edge", data:e}); });
+    if (e.cat==='rag') g.style.display = ragVisible ? "" : "none";
     svg.appendChild(g);
+  });
+  applyLegendFilters();
+}
+
+function applyLegendFilters(){
+  document.querySelectorAll('.legend input[type=checkbox]').forEach(cb=>{
+    document.querySelectorAll(".edge-group.cat-"+cb.dataset.cat).forEach(g=> g.style.display = cb.checked? "" : "none");
   });
 }
 
@@ -453,9 +560,15 @@ function closePanel(){
 document.getElementById("p-close").addEventListener("click", closePanel);
 scrim.addEventListener("click", closePanel);
 document.querySelectorAll('.legend input[type=checkbox]').forEach(cb=>{
-  cb.addEventListener("change", ()=>{
-    document.querySelectorAll(".edge-group.cat-"+cb.dataset.cat).forEach(g=> g.style.display = cb.checked? "" : "none");
-  });
+  cb.addEventListener("change", applyLegendFilters);
+});
+
+const ragToggle = document.getElementById("rag-toggle");
+ragToggle.addEventListener("change", ()=>{
+  ragVisible = ragToggle.checked;
+  document.querySelectorAll(".node.ragflow").forEach(n=> n.style.display = ragVisible ? "flex" : "none");
+  drawEdges();
+  if (ragVisible) fitView();
 });
 
 // ---------- Node dragging ----------
