@@ -557,6 +557,22 @@ async def health() -> dict:
         "geminiSummarizerModel": config["GEMINI_SUMMARIZER_MODEL"],
     }
 
+@app.head("/health/new")
+async def health() -> dict:
+    """Health check for Render (and anything else pinging the service).
+
+    Echoes the resolved model config so a stale env var (this process is
+    still running on whatever GEMINI_MODEL/GEMINI_SUMMARIZER_MODEL was set
+    when it started — see connection/config.py's @lru_cache) is a one-request
+    check instead of a LangSmith trace dig.
+    """
+    return {
+        "success": True,
+        "message": "Taskflow Agent is UP and RUNNING...",
+        "geminiModel": config["GEMINI_MODEL"],
+        "geminiSummarizerModel": config["GEMINI_SUMMARIZER_MODEL"],
+    }
+
 
 def run() -> None:
     """Sync entry point for the `taskflow-agent` console script — runs the API server."""
