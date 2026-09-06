@@ -529,6 +529,18 @@ async def download_file(file_id: str):
     )
 
 
+@app.get("/graph/visualize")
+async def graph_page() -> FileResponse:
+    """Serves `public/graph.html` — an interactive diagram of the compiled
+    LangGraph itself (agent/graph_executor.py): every node, every conditional
+    edge, and why each one exists. Click a box or a connector line on the
+    page for the detailed explanation; nothing here is generated dynamically
+    from the live graph object, it's a hand-written map of the same
+    structure `build_graph()` assembles.
+    """
+    return FileResponse(path="public/graph.html", media_type="text/html")
+
+
 @app.get("/health")
 async def health() -> dict:
     """Health check for Render (and anything else pinging the service).

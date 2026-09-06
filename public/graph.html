@@ -1,0 +1,536 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TaskFlow Assistant — Agent Graph</title>
+<style>
+  :root{
+    --bg:#f6f7fb; --panel-bg:#ffffff; --ink:#1c2333; --muted:#5b6478; --border:#dde1ea;
+    --seq:#6b7280; --route:#7c3aed; --handoff:#ea7c1f; --loop:#16a34a; --limit:#dc2626; --end:#2563eb; --owns:#b7bccb;
+    --node-io:#e5e7eb; --node-book:#dbeafe; --node-agent:#dcfce7; --node-tools:#cffafe; --node-limit:#fee2e2; --node-leaf:#f4f4f6;
+    --shadow: 0 1px 2px rgba(20,20,40,.06), 0 6px 16px rgba(20,20,40,.06);
+  }
+  *{box-sizing:border-box;}
+  html,body{margin:0;padding:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;}
+  header{padding:16px 24px 12px; background:linear-gradient(180deg,#ffffff, #f6f7fb 90%); border-bottom:1px solid var(--border);}
+  header h1{margin:0 0 4px; font-size:19px;}
+  header p{margin:0; color:var(--muted); font-size:13px; max-width:920px; line-height:1.5;}
+  .legend{display:flex; flex-wrap:wrap; gap:6px 16px; margin-top:10px; align-items:center;}
+  .legend label{display:flex; align-items:center; gap:6px; font-size:12px; color:var(--muted); cursor:pointer; user-select:none;}
+  .legend input{accent-color:var(--ink); cursor:pointer;}
+  .swatch{width:20px; height:0; border-top:3px solid; border-radius:2px; display:inline-block;}
+  .swatch.dashed{border-top-style:dashed;}
+  .hint{font-size:11.5px; color:var(--muted); margin-left:auto; white-space:nowrap;}
+
+  #stage-wrap{padding:16px 20px 24px;}
+  #viewport{
+    position:relative; overflow:hidden; width:100%; height:78vh; min-height:520px;
+    background:
+      linear-gradient(90deg, rgba(0,0,0,.035) 1px, transparent 1px) 0 0/24px 24px,
+      linear-gradient(0deg, rgba(0,0,0,.035) 1px, transparent 1px) 0 0/24px 24px,
+      #ffffff;
+    border:1px solid var(--border); border-radius:12px; cursor:grab; touch-action:none;
+  }
+  #viewport.panning{cursor:grabbing;}
+  #canvas{position:absolute; top:0; left:0; transform-origin:0 0;}
+  #zones{position:absolute; top:0; left:0; width:100%; height:100%; pointer-events:none; z-index:0;}
+  .zone{position:absolute; border:1.5px dashed; border-radius:16px; pointer-events:none;}
+  .zone-label{position:absolute; top:-9px; left:12px; background:#fff; padding:0 6px; font-size:10px; font-weight:800; text-transform:uppercase; letter-spacing:.05em; border-radius:4px;}
+  svg#edges{position:absolute; top:0; left:0; overflow:visible; pointer-events:none; z-index:1;}
+  svg#edges path{fill:none; pointer-events:stroke; cursor:pointer;}
+  svg#edges path.hit{stroke:transparent; stroke-width:14;}
+  svg#edges .arrow{pointer-events:none;}
+
+  .node{
+    position:absolute; z-index:2; border:1px solid var(--border); border-radius:8px;
+    background:var(--panel-bg); box-shadow:var(--shadow); cursor:grab; user-select:none; touch-action:none;
+    display:flex; flex-direction:column; justify-content:center; padding:0 8px; overflow:hidden;
+  }
+  .node:active{cursor:grabbing;}
+  .node:hover{border-color:#a8afc4; z-index:3;}
+  .node.selected{border-color:var(--ink); box-shadow:0 0 0 2px var(--ink), var(--shadow); z-index:4;}
+  .node .tag{font-size:8px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); font-weight:700; line-height:1.2;}
+  .node .name{font-size:11.5px; font-weight:700; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; line-height:1.25; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+  .node .sub{font-size:9.5px; color:var(--muted); line-height:1.2; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+
+  .node.io{background:var(--node-io); align-items:center; text-align:center;}
+  .node.book{background:var(--node-book);}
+  .node.agent{background:var(--node-agent);}
+  .node.tools{background:var(--node-tools);}
+  .node.limit{background:var(--node-limit);}
+  .node.leaf{background:var(--node-leaf); border-radius:20px; align-items:center;}
+  .node.leaf .name{font-size:9.5px; font-weight:600; text-align:center; width:100%;}
+
+  .controls{position:absolute; right:10px; top:10px; z-index:10; display:flex; flex-direction:column; gap:4px;}
+  .controls button{width:28px; height:28px; border-radius:6px; border:1px solid var(--border); background:#fff; cursor:pointer; font-size:15px; box-shadow:var(--shadow);}
+  .controls button:hover{background:#f1f2f6;}
+
+  #panel{
+    position:fixed; top:0; right:0; height:100%; width:min(420px,92vw);
+    background:var(--panel-bg); border-left:1px solid var(--border);
+    box-shadow:-12px 0 30px rgba(20,20,40,.08); transform:translateX(100%);
+    transition:transform .2s ease; z-index:50; display:flex; flex-direction:column;
+  }
+  #panel.open{transform:translateX(0);}
+  #panel .phead{padding:16px 20px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:flex-start; gap:10px;}
+  #panel .ptag{font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--muted); font-weight:700;}
+  #panel .ptitle{font-size:16px; font-weight:700; margin-top:2px; font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;}
+  #panel .pclose{border:none; background:none; font-size:20px; cursor:pointer; color:var(--muted); line-height:1;}
+  #panel .pbody{padding:16px 20px; overflow-y:auto; font-size:13.5px; line-height:1.6;}
+  #panel .pbody code{background:#f1f2f6; padding:1px 5px; border-radius:4px; font-size:12px;}
+  #panel .pbody h4{font-size:11.5px; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); margin:16px 0 6px;}
+  #panel .pbody ul{margin:4px 0; padding-left:18px;}
+  #panel .pbody li{margin:3px 0;}
+  #panel .fixnote{background:#fff7ed; border:1px solid #fed7aa; border-radius:8px; padding:10px 12px; margin-top:14px;}
+  #panel .fixnote b{color:#9a3412;}
+  #scrim{position:fixed; inset:0; background:rgba(20,20,30,.15); z-index:40; opacity:0; pointer-events:none; transition:opacity .2s;}
+  #scrim.open{opacity:1; pointer-events:auto;}
+  footer{padding:10px 24px 24px; color:var(--muted); font-size:12px; text-align:center;}
+</style>
+</head>
+<body>
+
+<header>
+  <h1>TaskFlow Assistant — Agent Graph</h1>
+  <p>
+    The actual compiled LangGraph <code>StateGraph</code> behind the TaskFlow Assistant (<code>agent/graph_executor.py</code>) —
+    drag any box to rearrange, scroll/pinch or use the +/− controls to zoom, drag empty space to pan.
+    Click a box or a connector line for a full explanation of what it does and why.
+  </p>
+  <div class="legend">
+    <label><span class="swatch" style="border-color:var(--seq)"></span><input type="checkbox" data-cat="seq" checked> Sequential</label>
+    <label><span class="swatch" style="border-color:var(--route)"></span><input type="checkbox" data-cat="route" checked> Supervisor routing</label>
+    <label><span class="swatch dashed" style="border-color:var(--handoff)"></span><input type="checkbox" data-cat="handoff" checked> Handoff</label>
+    <label><span class="swatch" style="border-color:var(--loop)"></span><input type="checkbox" data-cat="loop" checked> Tool loop</label>
+    <label><span class="swatch dashed" style="border-color:var(--limit)"></span><input type="checkbox" data-cat="limit" checked> Step-limit guard</label>
+    <label><span class="swatch" style="border-color:var(--end)"></span><input type="checkbox" data-cat="end" checked> Turn ends here</label>
+    <label><span class="swatch" style="border-color:var(--owns)"></span><input type="checkbox" data-cat="owns" checked> Tool ownership</label>
+    <span class="hint">drag nodes · scroll to zoom · drag background to pan</span>
+  </div>
+</header>
+
+<div id="stage-wrap">
+  <div id="viewport">
+    <div id="canvas">
+      <div id="zones"></div>
+      <svg id="edges"></svg>
+    </div>
+    <div class="controls">
+      <button id="zoom-in" title="Zoom in">+</button>
+      <button id="zoom-out" title="Zoom out">−</button>
+      <button id="zoom-reset" title="Fit to view">⤢</button>
+    </div>
+  </div>
+</div>
+
+<footer>TaskFlow Assistant · generated documentation of <code>agent/graph_executor.py</code> · drag, zoom, and click to explore</footer>
+
+<div id="scrim"></div>
+<aside id="panel">
+  <div class="phead">
+    <div><div class="ptag" id="p-tag">Node</div><div class="ptitle" id="p-title">—</div></div>
+    <button class="pclose" id="p-close">✕</button>
+  </div>
+  <div class="pbody" id="p-body"></div>
+</aside>
+
+<script>
+const CANVAS_W = 1320, CANVAS_H = 900;
+
+const DOMAINS = [
+  { key:"task", cx:140, label:"Tasks & boards",
+    desc:"Creating, listing, getting, updating, and deleting tasks; a team's full Kanban board in one call; \"my tasks\"; changing a task's status; and a team's board-status columns (list/create/delete).",
+    tools:["create_task","get_task","list_tasks","get_my_tasks","get_board","update_task","delete_task","change_task_status","list_board_statuses","create_board_status","delete_board_status"],
+    guidance:["Use the my-tasks tool directly for \"my tasks\" rather than listing everything and filtering.","Use the board tool for a team's whole board (already grouped by column) instead of statuses-then-tasks.","Task/board actions need real ids — resolve a name via the matching list/lookup tool first."] },
+  { key:"team", cx:400, label:"Teams & roles",
+    desc:"Team CRUD (list/get/create/update/delete), team stats, inviting/removing team members, and looking up roles/permissions.",
+    tools:["list_teams","get_team","get_team_stats","create_team","update_team","delete_team","invite_to_team","remove_team_member","get_roles","get_my_permissions"],
+    guidance:["roleId is required by several tools — resolve it via the roles tool first, never guess a GUID.","Removing someone from one team vs. the whole workspace are different tools with different blast radius — workspace-wide removal belongs to the workspace specialist."] },
+  { key:"workspace", cx:660, label:"Workspace membership",
+    desc:"Listing/searching workspace members, workspace stats/info, sending/accepting/declining invitations, and updating/removing/enlisting members.",
+    tools:["list_workspace_people","get_workspace_stats","send_workspace_invitation","update_workspace_member","remove_workspace_member","enlist_workspace_members","accept_workspace_invitation","decline_workspace_invitation","get_pending_invitations","get_workspace_info"],
+    guidance:["Whole-workspace removal is a different tool than single-team removal — that's this specialist's job, not team's.","A user's own profile/settings/password belongs to user_admin, not here."] },
+  { key:"user_admin", cx:920, label:"User accounts",
+    desc:"Listing users, looking up a user by id, and updating a user's own profile, settings, or password.",
+    tools:["list_users","get_user_by_id","update_user_profile","get_user_settings","update_user_settings","update_user_password"],
+    guidance:["This is a user's own account details — team/workspace membership belongs to those specialists instead."] },
+  { key:"knowledge", cx:1180, label:"General / catch-all",
+    desc:"General TaskFlow questions, greetings, small talk, and anything that doesn't clearly fit the other four — has no MCP tools of its own, only a RAG knowledge-base search tool.",
+    tools:["search_knowledge_base"],
+    guidance:["Search the knowledge base for feature/policy/how-it-works questions before answering from memory.","For a greeting, respond briefly and ask what the user needs."] },
+];
+
+const TOOL_DESC = {
+  create_task:"POST /tasks", get_task:"GET /tasks/{id}", list_tasks:"GET /tasks",
+  get_my_tasks:"GET /tasks/my — same shape as list, implicitly assignee = self",
+  get_board:"GET /tasks/team/{teamId}/board — full Kanban board in one call",
+  update_task:"PUT /tasks/{id}", delete_task:"DELETE /tasks/{id}", change_task_status:"PATCH /tasks/{id}/status",
+  list_board_statuses:"GET /board-statuses/team/{teamId}", create_board_status:"POST /board-statuses/create",
+  delete_board_status:"DELETE /board-statuses/{statusId}",
+  list_teams:"GET /teams — teams the caller belongs to", get_team:"GET /teams/{teamId}", get_team_stats:"GET /teams/stats",
+  create_team:"POST /teams", update_team:"PUT /teams/{teamId}", delete_team:"DELETE /teams/{teamId}",
+  invite_to_team:"POST /teams/{teamId}/invite — requires the caller's role to include Manage",
+  remove_team_member:"DELETE /teams/{teamId}/members/{userId}", get_roles:"GET /roles",
+  get_my_permissions:"GET /permissions?teamId=&userId= — always the caller's OWN id, never model-supplied",
+  list_workspace_people:"GET /people", get_workspace_stats:"GET /people/stats", send_workspace_invitation:"POST /people/invite",
+  update_workspace_member:"PATCH /people/{userId}", remove_workspace_member:"DELETE /people/{userId}",
+  enlist_workspace_members:"POST /people/enlist",
+  accept_workspace_invitation:"POST /people/invitations/accept — anonymous, no auth required",
+  decline_workspace_invitation:"POST /people/invitations/decline — anonymous, no auth required",
+  get_pending_invitations:"GET /people/invitations?userId=", get_workspace_info:"GET /workspace/{workspaceId}/info",
+  list_users:"GET /users", get_user_by_id:"GET /users/{userId}", update_user_profile:"PUT /users/{userId}",
+  get_user_settings:"GET /users/{userId}/settings", update_user_settings:"PUT /users/{userId}/settings",
+  update_user_password:"PUT /users/{userId}/password",
+  search_knowledge_base:"RAG similarity search over the knowledge-base docs (rag/retriever.py) — not a TaskFlow backend HTTP call",
+};
+
+function toolListHtml(d){ return "<ul>"+d.tools.map(t=>`<li><code>${t}</code></li>`).join("")+"</ul>"; }
+function guidanceHtml(d){ return "<ul>"+d.guidance.map(g=>`<li>${g}</li>`).join("")+"</ul>"; }
+function commonSpecialistFooter(){
+  return `<h4>Every specialist also gets</h4>
+    <ul>
+      <li><code>export_document</code> — turn its own domain's data into a downloadable file.</li>
+      <li>One <code>handoff_to_&lt;domain&gt;</code> tool per <em>other</em> domain (<code>agent/handoff_tools.py</code>) — explicit, deterministic hand-off instead of guessing or answering outside its lane.</li>
+    </ul>
+    <h4>Message prep before every model call</h4>
+    <ul>
+      <li><code>strip_thought_signatures</code> — collapses Gemini's list-content back to plain text so one specialist's thought-signature metadata never corrupts another's call.</li>
+      <li><code>ensure_non_empty_tool_content</code> — backstops any tool (RAG, MCP) that can return a truly empty result, which some providers reject outright.</li>
+      <li><code>ensure_valid_trailing_turn</code> — some Gemini models reject a request whose last turn is model-authored; appends an internal continuation placeholder when needed, never persisted to state.</li>
+    </ul>`;
+}
+
+// ---------- Static node detail content (core + per-domain) ----------
+const NODES = {
+  START:{ tag:"Entry point", w:110, h:36, cls:"io", label:"START", sub:"", body:`<p>Where LangGraph starts running the graph for a new invocation. No work happens here — it immediately edges to <code>hydrate_user</code>.</p>` },
+  hydrate_user:{ tag:"Node · agent/flow_nodes/hydrate_user.py", w:150, h:42, cls:"book", label:"hydrate_user", sub:"caches caller profile once/thread", body:`
+    <p>Fetches the caller's own TaskFlow profile (<code>GET /auth/me</code>) <b>once per thread</b>, no LLM or tool-calling round trip, and caches it in <code>state["current_user"]</code>.</p>
+    <p><code>current_user</code> is a plain checkpointed field (not <code>UntrackedValue</code>), so it survives for the rest of the conversation — every later turn's call to this node is a cheap no-op.</p>
+    <p>The supervisor and every specialist get this profile injected straight into their system prompt (<code>IDENTITY_BLOCK_TEMPLATE</code>), so they never spend a tool call rediscovering who's asking.</p>` },
+  summarize:{ tag:"Node · hub · agent/flow_nodes/summarizer.py + graph_executor.py", w:170, h:48, cls:"book", label:"summarize", sub:"reached from 3 places · routing hub", body:`
+    <p>Reached from <b>three different places</b> and does two separate jobs.</p>
+    <h4>Job 1 — conditional compaction</h4>
+    <p>If the conversation's estimated token count exceeds <code>TOKEN_TRIGGER</code> (8000), it summarizes everything before a safe cutoff (keeping the last <code>KEEP_LAST</code>=12 messages verbatim, nudged by <code>_safe_cutoff_index</code> so a cutoff never separates a tool call from its result) into one LLM-written <code>HumanMessage</code>, tagged <code>additional_kwargs.lc_source="summarization"</code>. Below the trigger, it's a no-op.</p>
+    <h4>Job 2 — decide what happens next (<code>_route_after_summarize</code>)</h4>
+    <ul>
+      <li>A fresh, real <code>HumanMessage</code> just arrived (turn start) → <b>supervisor</b>.</li>
+      <li>The specialist that just ran produced a plain final answer, no tool calls → <b>END</b>.</li>
+      <li>A <code>handoff_to_&lt;domain&gt;</code> ToolMessage is present → straight to <b>that domain's specialist</b>, deterministic string match, no model call.</li>
+    </ul>
+    <div class="fixnote"><b>Bugs found &amp; fixed here:</b>
+      <p style="margin:6px 0 0">1) The routing check originally trusted only <code>messages[-1]</code>, but <code>ToolNode</code> runs a step's tool calls concurrently and appends results in the model's own <code>tool_calls</code> order — a handoff call mixed with another tool call in the same step wasn't guaranteed to be last, silently falling through to <code>END</code>.</p>
+      <p style="margin:6px 0 0">2) Job 1's own synthetic summary message is appended at the very end of <code>messages</code> — indistinguishable from "a fresh user turn arrived" if a real summarization pass landed on the same step as a handoff, erasing the pending handoff and rerouting through the supervisor instead. Both fixed: the check now scans backward past synthetic summary messages and across a step's whole tool-result run instead of trusting one single message.</p>
+    </div>` },
+  supervisor:{ tag:"Node · agent/flow_nodes/supervisor.py", w:150, h:42, cls:"book", label:"supervisor", sub:"one routing call per turn", body:`
+    <p>One cheap, <b>tools-free</b> structured-output call (fixed at "minimal" thinking regardless of the turn's own <code>thinking_level</code>) that picks exactly one of <code>task / team / workspace / user_admin / knowledge</code> for the newest user message.</p>
+    <p>Runs <b>exactly once per turn, and is never re-consulted afterward</b>. An earlier design re-consulted the supervisor after every specialist to freely judge "are we done, or does another domain need to contribute?" — demonstrated unreliable (identical input, two different outcomes across two live runs) and able to loop all the way to the per-run call cap on a plain greeting. Replaced with the explicit <code>handoff_to_X</code> tool mechanism: a deterministic string comparison, not a second model judgment.</p>
+    <h4>Routing guidance it's given</h4>
+    <p>A domain word appearing in the message doesn't by itself mean that domain — it checks whether the user wants something concrete <em>done</em> in that domain (→ that specialist) versus asking <em>about</em> it in the abstract (→ knowledge, the catch-all).</p>` },
+  limit_reached:{ tag:"Node · guard · agent/flow_nodes/model_limit.py", w:150, h:42, cls:"limit", label:"limit_reached", sub:"per-run call cap tripped", body:`
+    <p>Reached only when a specialist wants <em>another</em> tool call but <code>state["llm_calls"]</code> (an <code>UntrackedValue</code> — resets to 0 every new run) has reached <code>MODEL_CALL_LIMIT_PER_RUN</code> (default <b>10</b>).</p>
+    <p>Appends one fixed message — "I've hit the maximum number of steps I can take on this request..." — and the turn ends.</p>
+    <h4>Why it can't override a good answer</h4>
+    <p><code>route_after_agent</code> checks what the agent actually wants to do <em>first</em>: a clean final answer with no more tool calls stands even if the call count happens to be at/over the cap on that exact step. The limit only intervenes when the agent still wants to keep going but isn't allowed to anymore.</p>` },
+  END:{ tag:"Exit point", w:110, h:36, cls:"io", label:"END", sub:"", body:`<p>The turn is over. Whatever is currently the last real message in state is the answer streamed back to the caller.</p>` },
+};
+
+const AGENT_W=132, AGENT_H=40, TOOLS_W=132, TOOLS_H=40, LEAF_W=58, LEAF_H=20;
+
+DOMAINS.forEach(d=>{
+  NODES[d.key+"_agent"] = { tag:`Specialist · ${d.label} · agent/flow_nodes/specialist_agent.py`, w:AGENT_W, h:AGENT_H, cls:"agent",
+    label:d.key+"_agent", sub:d.label, body:`
+    <p><b>Domain:</b> ${d.desc}</p>
+    <h4>Its own tools</h4>${toolListHtml(d)}
+    <h4>Tool-choice guidance in its prompt</h4>${guidanceHtml(d)}
+    ${commonSpecialistFooter()}` };
+  NODES[d.key+"_tools"] = { tag:`Tool node · ${d.label} · graph_executor.py (ToolNode)`, w:TOOLS_W, h:TOOLS_H, cls:"tools",
+    label:d.key+"_tools", sub:d.tools.length+" tools + export + handoffs", body:`
+    <p>A private <code>ToolNode</code> built from exactly this domain's own tool list — not shared across domains, so it only ever executes a call for a tool this specialist was itself bound.</p>
+    <p>Executes whatever the specialist just called: a domain MCP tool, <code>export_document</code>, or a <code>handoff_to_&lt;domain&gt;</code> tool — LangGraph's <code>ToolNode</code> doesn't distinguish these; that distinction is made afterward by <code>_route_after_tools</code>, purely by tool <b>name</b>.</p>` };
+  d.tools.forEach(t=>{
+    const id = `tool::${d.key}::${t}`;
+    NODES[id] = { tag:`Tool · ${d.label}`, w:LEAF_W, h:LEAF_H, cls:"leaf", label:t, sub:"", isLeaf:true,
+      body:`<p><code>${t}</code></p><p>${TOOL_DESC[t] || "MCP tool."}</p><p>Bound only to <code>${d.key}_agent</code>, executed only by <code>${d.key}_tools</code>.</p>` };
+  });
+});
+
+// ---------- Positions (canvas-space, top-left x/y) ----------
+const POS = {};
+function place(id, x, y){ POS[id] = {x, y, w:NODES[id].w, h:NODES[id].h}; }
+
+const SPINE_CX = 660;
+place("START", SPINE_CX-55, 18);
+place("hydrate_user", SPINE_CX-75, 84);
+place("summarize", SPINE_CX-85, 156);
+place("supervisor", SPINE_CX-75, 240);
+
+DOMAINS.forEach(d=>{
+  place(d.key+"_agent", d.cx-AGENT_W/2, 330);
+  place(d.key+"_tools", d.cx-TOOLS_W/2, 410);
+});
+
+const LEAF_ROW_H = 25, LEAF_COL_GAP = 6;
+DOMAINS.forEach(d=>{
+  const col0X = d.cx - (LEAF_W+LEAF_COL_GAP/2);
+  const col1X = d.cx + LEAF_COL_GAP/2;
+  const startY = 478;
+  d.tools.forEach((t,i)=>{
+    const row = Math.floor(i/2), col = i%2;
+    place(`tool::${d.key}::${t}`, (col===0?col0X:col1X), startY + row*LEAF_ROW_H);
+  });
+});
+
+place("limit_reached", 845, 700);
+place("END", SPINE_CX-55, 780);
+
+// ---------- Structural edges ----------
+const HANDOFF_MECH = `<div class="fixnote"><b>Model-compliance note:</b>
+    <p style="margin:6px 0 0">Calling the tool correctly is only half of it — the receiving specialist also has to recognize it's now the one in control. <code>agent_common.txt</code> explicitly says: a <code>handoff_to_&lt;your domain&gt;</code> result in the conversation means <em>you</em> now own the reason given, act on it with your own tools immediately — don't just acknowledge or re-describe the handoff. Without that instruction a fast/low-effort model would sometimes just narrate "handing off to the X specialist" with no further tool calls, which — having made zero tool calls — the graph correctly (by design) treats as the turn's real final answer.</p></div>`;
+
+const EDGES = [
+  { from:"START", to:"hydrate_user", cat:"seq", label:"always", body:`<p>Unconditional — every invocation starts here.</p>` },
+  { from:"hydrate_user", to:"summarize", cat:"seq", label:"always", body:`<p>Unconditional. <code>hydrate_user</code> is a no-op after the first turn of a thread, so this is effectively free on every later turn.</p>` },
+  { from:"summarize", to:"supervisor", cat:"route", label:"fresh HumanMessage", body:`<p><code>_route_after_summarize</code>: the latest real message (skipping any trailing synthetic summary message) is a genuine new <code>HumanMessage</code> — a turn just started, so the supervisor gets its one routing call.</p>` },
+  { from:"summarize", to:"END", cat:"end", label:"specialist's own final answer", body:`<p>The latest real message is a plain <code>AIMessage</code> with no tool calls — a specialist finished the whole request itself with nothing left to hand off.</p>` },
+  { from:"limit_reached", to:"END", cat:"end", label:"always", body:`<p>Unconditional. Once the fixed "hit the maximum steps" message is appended, the turn is over.</p>` },
+];
+
+DOMAINS.forEach(d=>{
+  const agent=d.key+"_agent", tools=d.key+"_tools";
+  EDGES.push({ from:"supervisor", to:agent, cat:"route", label:`active_specialist == "${d.key}"`,
+    body:`<p>Fires when the supervisor's structured-output decision names <b>${d.key}</b> for this turn. Exactly one of the five <code>supervisor →</code> edges fires per turn.</p>` });
+  EDGES.push({ from:"summarize", to:agent, cat:"handoff", label:`handoff_to_${d.key} result`,
+    body:`<p>Fires when the latest real message is a <code>ToolMessage</code> named <code>handoff_to_${d.key}</code> — another specialist explicitly passed the request here. <code>target_domain</code> is parsed straight from the tool's own name.</p>${HANDOFF_MECH}` });
+  EDGES.push({ from:agent, to:tools, cat:"loop", label:"wants a tool, under the cap",
+    body:`<p><code>route_after_agent</code>: the model's response has tool calls, and <code>state["llm_calls"]</code> is still under <code>MODEL_CALL_LIMIT_PER_RUN</code>. Could be one of ${d.key}'s own tools, <code>export_document</code>, or a <code>handoff_to_X</code> call.</p>` });
+  EDGES.push({ from:agent, to:"limit_reached", cat:"limit", label:"wants a tool, at/over the cap",
+    body:`<p>The model still wants to call a tool, but <code>state["llm_calls"] &gt;= MODEL_CALL_LIMIT_PER_RUN</code> (default 10).</p>` });
+  EDGES.push({ from:agent, to:"summarize", cat:"end", label:"no more tool calls",
+    body:`<p><code>route_after_agent</code>'s <code>END</code> case: ${d.key}_agent produced a plain answer with no tool calls. Still passes through <code>summarize</code> first (token-trigger check) before <code>_route_after_summarize</code> resolves it to the real <code>END</code>.</p>` });
+  EDGES.push({ from:tools, to:agent, cat:"loop", label:"no handoff among this step's calls",
+    body:`<p><code>_route_after_tools</code>: none of this step's tool calls were a handoff, so control loops straight back to ${d.key}_agent with the fresh tool result(s) in context.</p>` });
+  EDGES.push({ from:tools, to:"summarize", cat:"handoff", label:"a handoff was among this step's calls",
+    body:`<p><code>_route_after_tools</code>: at least one call this step was <code>handoff_to_&lt;domain&gt;</code> — even bundled alongside a normal ${d.key} tool call. Routes up through <code>summarize</code>, which reads the target domain off the handoff ToolMessage's name.</p>${HANDOFF_MECH}` });
+  d.tools.forEach(t=>{
+    EDGES.push({ from:tools, to:`tool::${d.key}::${t}`, cat:"owns", label:"",
+      body:`<p><code>${tools}</code> is a <code>ToolNode</code> built from ${d.key}'s tool list — <code>${t}</code> is one member of it.</p>` });
+  });
+});
+
+// ---------- Zones (visual grouping of node clusters) ----------
+const ZONES = [
+  { label:"Routing & bookkeeping", color:"#2563eb", members:["START","hydrate_user","summarize","supervisor"] },
+  { label:"Specialist agents", color:"#16a34a", members: DOMAINS.map(d=>d.key+"_agent") },
+  { label:"Specialist tool nodes", color:"#0891b2", members: DOMAINS.map(d=>d.key+"_tools") },
+  { label:"Tool catalog", color:"#6b7280", members: DOMAINS.flatMap(d=>d.tools.map(t=>`tool::${d.key}::${t}`)) },
+  { label:"Guards & exit", color:"#dc2626", members:["limit_reached","END"] },
+];
+function drawZones(){
+  const zonesEl = document.getElementById("zones");
+  zonesEl.innerHTML = "";
+  ZONES.forEach(z=>{
+    let minX=Infinity, minY=Infinity, maxX=-Infinity, maxY=-Infinity;
+    z.members.forEach(id=>{
+      const p = POS[id]; if (!p) return;
+      minX=Math.min(minX,p.x); minY=Math.min(minY,p.y);
+      maxX=Math.max(maxX,p.x+p.w); maxY=Math.max(maxY,p.y+p.h);
+    });
+    if (minX===Infinity) return;
+    const pad=16;
+    const div = document.createElement("div");
+    div.className = "zone";
+    div.style.left=(minX-pad)+"px"; div.style.top=(minY-pad)+"px";
+    div.style.width=(maxX-minX+pad*2)+"px"; div.style.height=(maxY-minY+pad*2)+"px";
+    div.style.borderColor=z.color+"66";
+    div.style.background=z.color+"0d";
+    div.innerHTML = `<span class="zone-label" style="color:${z.color}">${z.label}</span>`;
+    zonesEl.appendChild(div);
+  });
+}
+
+// ---------- Rendering ----------
+const canvas = document.getElementById("canvas");
+const svg = document.getElementById("edges");
+const viewport = document.getElementById("viewport");
+const panel = document.getElementById("panel");
+const scrim = document.getElementById("scrim");
+
+canvas.style.width = CANVAS_W+"px";
+canvas.style.height = CANVAS_H+"px";
+svg.setAttribute("width", CANVAS_W);
+svg.setAttribute("height", CANVAS_H);
+
+let zoom = 1, panX = 0, panY = 0;
+function applyTransform(){ canvas.style.transform = `translate(${panX}px, ${panY}px) scale(${zoom})`; }
+
+function rectOf(id){ const p=POS[id]; return {left:p.x, right:p.x+p.w, top:p.y, bottom:p.y+p.h, cx:p.x+p.w/2, cy:p.y+p.h/2}; }
+
+function pathFor(a,b){
+  let sx,sy,ex,ey,d;
+  if (b.top >= a.bottom - 4){
+    sx=a.cx; sy=a.bottom; ex=b.cx; ey=b.top;
+    const midY=(sy+ey)/2;
+    d = `M ${sx} ${sy} C ${sx} ${midY}, ${ex} ${midY}, ${ex} ${ey}`;
+  } else if (b.bottom <= a.top + 4){
+    const goLeft = a.cx <= b.cx ? false : true;
+    sx = goLeft ? a.left : a.right; sy=a.cy; ex = goLeft ? b.right : b.left; ey=b.cy;
+    const bulge = (goLeft? -1:1) * (70 + Math.min(220,Math.abs(a.cy-b.cy)*0.15));
+    const mx=(sx+ex)/2 + bulge, my=(sy+ey)/2;
+    d = `M ${sx} ${sy} Q ${mx} ${my}, ${ex} ${ey}`;
+  } else {
+    const leftIsA = a.cx < b.cx;
+    sx = leftIsA? a.right : a.left; sy=a.cy; ex = leftIsA? b.left : b.right; ey=b.cy;
+    const mx=(sx+ex)/2, my=(sy+ey)/2 - 36;
+    d = `M ${sx} ${sy} Q ${mx} ${my}, ${ex} ${ey}`;
+  }
+  return {d, ex, ey};
+}
+function arrowHead(x,y,color){
+  return `<path class="arrow" d="M ${x-5} ${y-8} L ${x} ${y} L ${x+5} ${y-8}" stroke="${color}" stroke-width="1.6" stroke-linecap="round" fill="none"/>`;
+}
+const CAT_COLOR = {seq:"var(--seq)", route:"var(--route)", handoff:"var(--handoff)", loop:"var(--loop)", limit:"var(--limit)", end:"var(--end)", owns:"var(--owns)"};
+const CAT_DASH  = {seq:"", route:"", handoff:"6,4", loop:"", limit:"6,4", end:"", owns:"3,3"};
+
+function drawEdges(){
+  drawZones();
+  svg.innerHTML = "";
+  EDGES.forEach((e,i)=>{
+    const a = rectOf(e.from), b = rectOf(e.to);
+    const {d, ex, ey} = pathFor(a,b);
+    const color = CAT_COLOR[e.cat];
+    const g = document.createElementNS("http://www.w3.org/2000/svg","g");
+    g.setAttribute("class","edge-group cat-"+e.cat);
+    g.innerHTML = `
+      <path class="hit" d="${d}"></path>
+      <path d="${d}" stroke="${color}" stroke-width="${e.cat==='owns'?1.2:2}" stroke-dasharray="${CAT_DASH[e.cat]}"></path>
+      ${e.cat==='owns' ? '' : arrowHead(ex,ey,color)}
+    `;
+    g.addEventListener("click", (ev)=>{ ev.stopPropagation(); openPanel({kind:"edge", data:e}); });
+    svg.appendChild(g);
+  });
+}
+
+function renderNodes(){
+  Object.keys(POS).forEach(id=>{
+    const meta = NODES[id], p = POS[id];
+    const el = document.createElement("div");
+    el.className = "node " + meta.cls;
+    el.dataset.id = id;
+    el.style.left = p.x+"px"; el.style.top = p.y+"px"; el.style.width = p.w+"px"; el.style.height = p.h+"px";
+    if (meta.isLeaf){
+      el.innerHTML = `<div class="name">${meta.label}</div>`;
+    } else {
+      el.innerHTML = `<div class="tag">${meta.cls==='io'?(id==='START'?'Entry':'Exit'):(meta.cls==='agent'?'Specialist':meta.cls==='tools'?'Tool node':meta.cls==='limit'?'Guard':'Node')}</div><div class="name">${meta.label}</div>${meta.sub?`<div class="sub">${meta.sub}</div>`:""}`;
+    }
+    canvas.appendChild(el);
+    attachDrag(el, id);
+  });
+}
+
+function openPanel({kind, data}){
+  document.querySelectorAll(".node.selected").forEach(n=>n.classList.remove("selected"));
+  const body = document.getElementById("p-body");
+  if (kind==="node"){
+    const info = NODES[data];
+    document.getElementById("p-tag").textContent = info.tag;
+    document.getElementById("p-title").textContent = info.isLeaf ? data.split("::")[2] : data;
+    body.innerHTML = info.body;
+    const el = document.querySelector(`.node[data-id="${CSS.escape(data)}"]`);
+    if (el) el.classList.add("selected");
+  } else {
+    document.getElementById("p-tag").textContent = `Edge · ${data.from} → ${data.to}`;
+    document.getElementById("p-title").textContent = data.label || (data.from+" → "+data.to);
+    body.innerHTML = data.body;
+  }
+  panel.classList.add("open"); scrim.classList.add("open");
+}
+function closePanel(){
+  panel.classList.remove("open"); scrim.classList.remove("open");
+  document.querySelectorAll(".node.selected").forEach(n=>n.classList.remove("selected"));
+}
+document.getElementById("p-close").addEventListener("click", closePanel);
+scrim.addEventListener("click", closePanel);
+document.querySelectorAll('.legend input[type=checkbox]').forEach(cb=>{
+  cb.addEventListener("change", ()=>{
+    document.querySelectorAll(".edge-group.cat-"+cb.dataset.cat).forEach(g=> g.style.display = cb.checked? "" : "none");
+  });
+});
+
+// ---------- Node dragging ----------
+function attachDrag(el, id){
+  let dragging=false, moved=false, startCX=0, startCY=0, origX=0, origY=0;
+  el.addEventListener("pointerdown", (e)=>{
+    e.stopPropagation(); e.preventDefault();
+    dragging=true; moved=false; startCX=e.clientX; startCY=e.clientY;
+    origX=POS[id].x; origY=POS[id].y;
+    el.setPointerCapture(e.pointerId);
+  });
+  el.addEventListener("pointermove", (e)=>{
+    if (!dragging) return;
+    const dx=(e.clientX-startCX)/zoom, dy=(e.clientY-startCY)/zoom;
+    if (Math.abs(dx)+Math.abs(dy) > 3) moved=true;
+    POS[id].x = origX+dx; POS[id].y = origY+dy;
+    el.style.left = POS[id].x+"px"; el.style.top = POS[id].y+"px";
+    drawEdges();
+  });
+  function end(e){
+    if (!dragging) return;
+    dragging=false;
+    if (!moved) openPanel({kind:"node", data:id});
+  }
+  el.addEventListener("pointerup", end);
+  el.addEventListener("pointercancel", end);
+}
+
+// ---------- Pan & zoom ----------
+let panning=false, panStartCX=0, panStartCY=0, panOrigX=0, panOrigY=0;
+viewport.addEventListener("pointerdown", (e)=>{
+  if (e.target !== viewport && e.target !== canvas && e.target !== svg) return;
+  panning=true; panStartCX=e.clientX; panStartCY=e.clientY; panOrigX=panX; panOrigY=panY;
+  viewport.classList.add("panning");
+  viewport.setPointerCapture(e.pointerId);
+});
+viewport.addEventListener("pointermove", (e)=>{
+  if (!panning) return;
+  panX = panOrigX + (e.clientX-panStartCX);
+  panY = panOrigY + (e.clientY-panStartCY);
+  applyTransform();
+});
+function endPan(){ panning=false; viewport.classList.remove("panning"); }
+viewport.addEventListener("pointerup", endPan);
+viewport.addEventListener("pointercancel", endPan);
+
+function zoomAt(mx,my,factor){
+  const newZoom = Math.min(2.2, Math.max(0.25, zoom*factor));
+  panX = mx - newZoom*((mx-panX)/zoom);
+  panY = my - newZoom*((my-panY)/zoom);
+  zoom = newZoom;
+  applyTransform();
+}
+viewport.addEventListener("wheel", (e)=>{
+  e.preventDefault();
+  const r = viewport.getBoundingClientRect();
+  zoomAt(e.clientX-r.left, e.clientY-r.top, e.deltaY<0?1.1:1/1.1);
+}, {passive:false});
+
+function fitView(){
+  const r = viewport.getBoundingClientRect();
+  const z = Math.min(r.width/(CANVAS_W+40), r.height/(CANVAS_H+40));
+  zoom = Math.max(0.3, Math.min(1, z));
+  panX = (r.width - CANVAS_W*zoom)/2;
+  panY = (r.height - CANVAS_H*zoom)/2;
+  applyTransform();
+}
+document.getElementById("zoom-in").addEventListener("click", ()=>{ const r=viewport.getBoundingClientRect(); zoomAt(r.width/2, r.height/2, 1.2); });
+document.getElementById("zoom-out").addEventListener("click", ()=>{ const r=viewport.getBoundingClientRect(); zoomAt(r.width/2, r.height/2, 1/1.2); });
+document.getElementById("zoom-reset").addEventListener("click", fitView);
+
+renderNodes();
+drawEdges();
+window.addEventListener("resize", fitView);
+fitView();
+</script>
+</body>
+</html>
