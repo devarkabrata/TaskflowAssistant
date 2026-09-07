@@ -83,6 +83,12 @@ class _CachedSession:
 
     async def _run(self, taskflow_token: str | None) -> None:
         client = MultiServerMCPClient(_build_connection(taskflow_token))
+        if config["MCP_TRANSPORT"] != "streamable_http":
+            # Only stdio actually forks a new OS subprocess here — logged so
+            # subprocess-count growth (e.g. many distinct callers, or one
+            # respawning after a crash) is visible without attaching a
+            # debugger.
+            print(f"[mcp] spawning new MCP subprocess (key={taskflow_token or '__default__'!r})")
         try:
             async with client.session(_SERVER_NAME) as session:
                 self.tools = await _load_tools_from_session(session, server_name=_SERVER_NAME)
