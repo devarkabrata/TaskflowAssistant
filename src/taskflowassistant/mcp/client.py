@@ -17,7 +17,6 @@ LangChain tools from THAT session, so every tool call reuses it instead.
 import asyncio
 import os
 import sys
-import time
 
 from langchain_core.tools import BaseTool
 from langchain_mcp_adapters.client import MultiServerMCPClient
@@ -26,12 +25,6 @@ from langchain_mcp_adapters.tools import load_mcp_tools as _load_tools_from_sess
 from taskflowassistant.connection.config import config
 
 _SERVER_NAME = "taskflow"
-
-# How long a caller's cached MCP session may sit unused before it's closed.
-# Reuse across messages in the same conversation is the whole point of the
-# cache below; this bound just stops a departed caller's session (and, for
-# stdio, its subprocess) from living forever.
-_IDLE_TTL_SECONDS = 600
 
 
 def _build_connection(taskflow_token: str | None = None) -> dict:
@@ -70,12 +63,20 @@ class _CachedSession:
     request and closed by another. This background task holds that block
     open across every call that shares its cache key (see `load_mcp_tools`),
     and is the only thing that ever closes it.
+
+    Deliberately no idle timeout: `graph_executor.py`'s compiled-graph cache
+    holds onto these `tools` objects (bound into a `ToolNode`) for as long as
+    that cache entry lives, with no way to know when this session under it
+    gets torn down. An idle-based close here previously left that cache
+    holding tools wired to an already-closed session — the next tool call
+    through it hit a write on a closed stream (`anyio.ClosedResourceError`)
+    instead of a clean rebuild. Only an explicit `close()` (app shutdown)
+    ends this now.
     """
 
     def __init__(self, taskflow_token: str | None):
         self.tools: list[BaseTool] | None = None
         self.error: BaseException | None = None
-        self.last_used = time.monotonic()
         self._ready = asyncio.Event()
         self._close_requested = asyncio.Event()
         self.task = asyncio.create_task(self._run(taskflow_token))
@@ -86,13 +87,7 @@ class _CachedSession:
             async with client.session(_SERVER_NAME) as session:
                 self.tools = await _load_tools_from_session(session, server_name=_SERVER_NAME)
                 self._ready.set()
-                while True:
-                    try:
-                        await asyncio.wait_for(self._close_requested.wait(), timeout=30)
-                        break
-                    except TimeoutError:
-                        if time.monotonic() - self.last_used > _IDLE_TTL_SECONDS:
-                            break
+                await self._close_requested.wait()
         except Exception as exc:  # noqa: BLE001 - surfaced to waiters via `get_tools`
             self.error = exc
         finally:
@@ -108,7 +103,6 @@ class _CachedSession:
         await self._ready.wait()
         if self.error is not None:
             raise self.error
-        self.last_used = time.monotonic()
         return self.tools
 
 
@@ -128,8 +122,10 @@ async def load_mcp_tools(taskflow_token: str | None = None) -> list[BaseTool]:
     the cache key: every message from the same caller reuses the same
     connection instead of paying for a brand-new one, while a different
     token naturally gets its own session rather than reusing someone else's.
-    A session that's gone idle for `_IDLE_TTL_SECONDS`, or that failed, is
-    dropped and rebuilt on the next call.
+    A session that has failed, or was explicitly closed (see
+    `close_all_mcp_sessions`), is dropped and rebuilt on the next call. A
+    session is otherwise kept open indefinitely — see `_CachedSession`'s
+    docstring for why it can't be closed on an idle timer.
     """
     key = taskflow_token or "__default__"
     session = _sessions.get(key)
@@ -137,6 +133,27 @@ async def load_mcp_tools(taskflow_token: str | None = None) -> list[BaseTool]:
         session = _CachedSession(taskflow_token)
         _sessions[key] = session
     return await session.get_tools()
+
+
+def is_session_alive(taskflow_token: str | None = None) -> bool:
+    """Whether this caller's cached MCP session is still alive.
+
+    `graph_executor.py`'s compiled-graph cache holds a `ToolNode` built from
+    a past `load_mcp_tools()` call's tool objects, which stay bound to
+    whatever `_CachedSession` was live at that moment. That session no
+    longer being reaped on an idle timer (see `_CachedSession`'s docstring)
+    doesn't rule out it dying some other way — the MCP subprocess crashing,
+    the connection dropping — after that graph was compiled and cached. This
+    lets a cache hit there confirm the session it was built on is still the
+    one running before trusting it, instead of only finding out via
+    `anyio.ClosedResourceError` on the next tool call.
+
+    Returns `False` (never alive) for a token with no cached session yet —
+    correct for the caller either way: nothing to trust, so it should treat
+    this like a dead session and (re)build one via `load_mcp_tools`.
+    """
+    session = _sessions.get(taskflow_token or "__default__")
+    return session is not None and session.is_alive()
 
 
 async def close_all_mcp_sessions() -> None:

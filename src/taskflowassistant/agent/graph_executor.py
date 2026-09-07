@@ -15,6 +15,7 @@ from taskflowassistant.agent.schema.state import TaskFlowState
 from taskflowassistant.agent.memory import checkpointer
 from taskflowassistant.agent.tool_groups import SPECIALIST_NAMES
 from taskflowassistant.agent.tools_registry import get_grouped_tools
+from taskflowassistant.mcp.client import is_session_alive
 
 # e.g. {"task": "task_agent", "team": "team_agent", ..., "knowledge": "knowledge_agent"}
 SPECIALIST_NODE_NAMES: dict[str, str] = {name: f"{name}_agent" for name in SPECIALIST_NAMES}
@@ -237,6 +238,15 @@ async def build_compiled_graph(
     naturally misses the cache and builds a new entry, same as before. Bounded
     to `_MAX_CACHED_GRAPHS` least-recently-used entries so a long-running
     deployment with many distinct callers/configs doesn't grow this forever.
+
+    A cache hit also confirms the MCP session its tools are bound to
+    (`mcp/client.py`'s `is_session_alive`) is still the one actually running
+    before returning it — a graph built while that session was alive isn't
+    invalidated here when the session later dies on its own (subprocess
+    crash, dropped connection), so trusting the cache blindly would hand
+    back a `ToolNode` wired to a dead session, only surfacing as
+    `anyio.ClosedResourceError` on the next tool call. A dead session evicts
+    this entry and falls through to rebuild against a fresh one below.
     """
     key = (
         taskflow_token,
@@ -248,8 +258,10 @@ async def build_compiled_graph(
     )
     cached = _compiled_graph_cache.get(key)
     if cached is not None:
-        _compiled_graph_cache.move_to_end(key)
-        return cached
+        if is_session_alive(taskflow_token):
+            _compiled_graph_cache.move_to_end(key)
+            return cached
+        del _compiled_graph_cache[key]
 
     graph = await build_graph(
         taskflow_token,
