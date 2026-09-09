@@ -78,7 +78,6 @@ from fastapi.responses import FileResponse
 from langchain_core.exceptions import ModelError
 from langchain_core.messages import AIMessageChunk
 from pydantic import BaseModel, model_validator
-from starlette.background import BackgroundTask
 
 from taskflowassistant.agent.models.model_1 import SUPPORTED_MODEL_PROVIDERS
 from taskflowassistant.agent.graph_executor import (
@@ -87,7 +86,7 @@ from taskflowassistant.agent.graph_executor import (
     build_compiled_graph,
 )
 from taskflowassistant.connection.config import config
-from taskflowassistant.dedicated_tools.store import get_file, release_file
+from taskflowassistant.dedicated_tools.store import get_file
 from taskflowassistant.mcp.client import close_all_mcp_sessions
 
 # The set of model-invoking / tool-executing node names in the current graph
@@ -511,21 +510,39 @@ async def stop_chat(job_id: str) -> dict:
     return {"status": job["status"]}
 
 
-@app.get("/files/{file_id}")
-async def download_file(file_id: str):
-    """Serve a document `export_document` generated (see dedicated_tools/).
+# Extensions `export_document` can produce (dedicated_tools/builder.py) mapped
+# to the media type the browser needs to render each one inline instead of
+# guessing (mimetypes has no built-in entry for .md, and guessing wrong here
+# is what makes a browser fall back to a download prompt).
+_EXPORT_MEDIA_TYPES = {
+    ".pdf": "application/pdf",
+    ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".md": "text/markdown",
+}
 
-    One-shot by design: the file is deleted from disk right after this
-    response finishes sending (dedicated_tools/store.py's `release_file`, run
-    as a background task) — the same `file_id` won't work a second time.
+
+@app.get("/files/{file_id}")
+async def get_file_for_preview(file_id: str):
+    """Serve a document `export_document` generated (see dedicated_tools/), for
+    inline preview rather than a forced download — e.g. a PDF in an `<iframe>`,
+    or raw bytes fetched by the UI to render in its own Excel/Markdown viewer.
+
+    Not one-shot: the file stays on disk and this same `file_id` can be
+    fetched again (opening the sidebar preview more than once, a PDF viewer
+    issuing range requests, etc.). It's still cleaned up eventually —
+    `dedicated_tools/store.py`'s TTL prune removes anything never claimed
+    within 30 minutes.
     """
     entry = get_file(file_id)
     if entry is None:
-        raise HTTPException(status_code=404, detail="Unknown or already-downloaded file_id.")
+        raise HTTPException(status_code=404, detail="Unknown or expired file_id.")
+    path = entry["path"]
+    media_type = _EXPORT_MEDIA_TYPES.get(path.suffix.lower(), "application/octet-stream")
     return FileResponse(
-        path=entry["path"],
+        path=path,
         filename=entry["filename"],
-        background=BackgroundTask(release_file, file_id),
+        media_type=media_type,
+        content_disposition_type="inline",
     )
 
 

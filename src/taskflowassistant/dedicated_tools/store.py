@@ -6,10 +6,12 @@ app's scale (single instance, ephemeral by design anyway — see the note in
 `connection/config.py` about Render wiping disk on every redeploy); a
 multi-instance deployment would need this backed by shared storage instead.
 
-Files are meant to be one-shot: `main.py`'s `/files/{file_id}` route deletes
-a file (via `release_file`) right after it finishes serving it, so a link
-only works once. `_STALE_TTL_SECONDS` is only a safety net for a file that's
-generated but never downloaded at all.
+`main.py`'s `GET /files/{file_id}` route serves a file inline (for the UI's
+document-preview sidebar) and does NOT delete it after serving — the same
+link can be opened repeatedly. `_STALE_TTL_SECONDS` is the only cleanup:
+`_prune_stale` (called from `register_file`) deletes anything left
+unclaimed past the TTL, and `release_file` is what actually removes a
+file's bytes and registry entry once that happens.
 """
 
 import time
